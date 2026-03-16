@@ -28,7 +28,7 @@ copaw init --force      # Overwrite existing config files
 1. **Heartbeat** — interval (e.g. `30m`), target (`main` / `last`), optional
    active hours.
 2. **Show tool details** — whether tool call details appear in channel messages.
-3. **Language** — `zh` or `en` for agent persona files (SOUL.md, etc.).
+3. **Language** — `zh` / `en` / `ru` for agent persona files (SOUL.md, etc.).
 4. **Channels** — optionally configure iMessage / Discord / DingTalk / Feishu /
    QQ / Console.
 5. **LLM provider** — select provider, enter API key, choose model (**required**).
@@ -314,12 +314,12 @@ JSON structure matches the output of `copaw cron get <job_id>`.
 
 ### Additional options
 
-| Option                       | Default | Description                                           |
-| ---------------------------- | ------- | ----------------------------------------------------- |
-| `--timezone`                 | `UTC`   | Timezone for the cron schedule                        |
-| `--enabled` / `--no-enabled` | enabled | Create enabled or disabled                            |
-| `--mode`                     | `final` | `stream` (incremental) or `final` (complete response) |
-| `--base-url`                 | auto    | Override the API base URL                             |
+| Option                       | Default       | Description                                                              |
+| ---------------------------- | ------------- | ------------------------------------------------------------------------ |
+| `--timezone`                 | user timezone | Timezone for the cron schedule (defaults to `user_timezone` from config) |
+| `--enabled` / `--no-enabled` | enabled       | Create enabled or disabled                                               |
+| `--mode`                     | `final`       | `stream` (incremental) or `final` (complete response)                    |
+| `--base-url`                 | auto          | Override the API base URL                                                |
 
 ### Cron expression cheat sheet
 

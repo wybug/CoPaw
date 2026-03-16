@@ -24,6 +24,7 @@ CoPaw 所有配置和数据默认都在一个目录里，叫**工作目录**，�
 | `HEARTBEAT.md`       | 心跳每次要问 CoPaw 的内容                     |
 | `jobs.json`          | 定时任务列表（通过 `copaw cron` 或 API 管理） |
 | `chats.json`         | 会话列表（文件存储模式）                      |
+| `token_usage.json`   | LLM Token 消耗记录（按日期、模型统计）        |
 | `active_skills/`     | 当前激活的技能（Agent 实际使用的）            |
 | `customized_skills/` | 用户自定义的技能                              |
 | `memory/`            | Agent 记忆文件（自动管理）                    |
@@ -32,7 +33,8 @@ CoPaw 所有配置和数据默认都在一个目录里，叫**工作目录**，�
 
 > **提示：** `SOUL.md` 和 `AGENTS.md` 是 Agent 系统提示词的最低要求。如果它们不存在，Agent
 > 会退回到通用的 "You are a helpful assistant" 提示。运行 `copaw init` 时会根据你选择的
-> 语言（`zh` / `en`）自动复制这些文件。
+> 语言（`zh` / `en` / `ru`）自动复制这些文件。你也可以之后在控制台
+> （Agent → 运行配置）中切换语言。
 
 ---
 
@@ -40,19 +42,21 @@ CoPaw 所有配置和数据默认都在一个目录里，叫**工作目录**，�
 
 如果你不想用 `~/.copaw`，可以通过环境变量改工作目录或某些文件的路径：
 
-| 变量                               | 默认值            | 说明                                                                                                                                            |
-| ---------------------------------- | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `COPAW_WORKING_DIR`                | `~/.copaw`        | 工作目录；config、心跳、jobs、chats、skills、memory 都在这下面                                                                                  |
-| `COPAW_SECRET_DIR`                 | `~/.copaw.secret` | 敏感数据目录（工作目录的同级目录）；存放 `providers.json`（模型配置、API Key）和 `envs.json`（环境变量）。Docker 中默认为 `/app/working.secret` |
-| `COPAW_CONFIG_FILE`                | `config.json`     | 配置文件名（相对工作目录）                                                                                                                      |
-| `COPAW_HEARTBEAT_FILE`             | `HEARTBEAT.md`    | 心跳问题文件名（相对工作目录）                                                                                                                  |
-| `COPAW_JOBS_FILE`                  | `jobs.json`       | 定时任务文件名（相对工作目录）                                                                                                                  |
-| `COPAW_CHATS_FILE`                 | `chats.json`      | 会话列表文件名（相对工作目录）                                                                                                                  |
-| `COPAW_LOG_LEVEL`                  | `info`            | 日志级别（`debug`、`info`、`warning`、`error`、`critical`）                                                                                     |
-| `COPAW_MEMORY_COMPACT_THRESHOLD`   | `100000`          | 触发记忆压缩的字符阈值                                                                                                                          |
-| `COPAW_MEMORY_COMPACT_KEEP_RECENT` | `3`               | 压缩后保留的最近消息数                                                                                                                          |
-| `COPAW_MEMORY_COMPACT_RATIO`       | `0.7`             | 触发压缩的阈值比例（相对于上下文窗口大小）                                                                                                      |
-| `COPAW_CONSOLE_STATIC_DIR`         | _（自动检测）_    | 控制台前端静态文件路径                                                                                                                          |
+| 变量                     | 默认值             | 说明                                                                                                                                            |
+| ------------------------ | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `COPAW_WORKING_DIR`      | `~/.copaw`         | 工作目录；config、心跳、jobs、chats、skills、memory 都在这下面                                                                                  |
+| `COPAW_SECRET_DIR`       | `~/.copaw.secret`  | 敏感数据目录（工作目录的同级目录）；存放 `providers.json`（模型配置、API Key）和 `envs.json`（环境变量）。Docker 中默认为 `/app/working.secret` |
+| `COPAW_CONFIG_FILE`      | `config.json`      | 配置文件名（相对工作目录）                                                                                                                      |
+| `COPAW_HEARTBEAT_FILE`   | `HEARTBEAT.md`     | 心跳问题文件名（相对工作目录）                                                                                                                  |
+| `COPAW_JOBS_FILE`        | `jobs.json`        | 定时任务文件名（相对工作目录）                                                                                                                  |
+| `COPAW_CHATS_FILE`       | `chats.json`       | 会话列表文件名（相对工作目录）                                                                                                                  |
+| `COPAW_TOKEN_USAGE_FILE` | `token_usage.json` | Token 消耗记录文件名（相对工作目录）                                                                                                            |
+
+| `COPAW_LOG_LEVEL` | `info` | 日志级别（`debug`、`info`、`warning`、`error`、`critical`） |
+| `COPAW_MEMORY_COMPACT_THRESHOLD` | `100000` | 触发记忆压缩的字符阈值 |
+| `COPAW_MEMORY_COMPACT_KEEP_RECENT` | `3` | 压缩后保留的最近消息数 |
+| `COPAW_MEMORY_COMPACT_RATIO` | `0.7` | 触发压缩的阈值比例（相对于上下文窗口大小） |
+| `COPAW_CONSOLE_STATIC_DIR` | _（自动检测）_ | 控制台前端静态文件路径 |
 
 例如在 Linux/macOS 里临时换工作目录：
 
@@ -132,6 +136,7 @@ copaw app
     "host": "127.0.0.1",
     "port": 8088
   },
+  "user_timezone": "Asia/Shanghai",
   "last_dispatch": null,
   "show_tool_details": true
 }
@@ -208,7 +213,7 @@ copaw app
 | ------------------------------------ | -------------- | ------ | ------------------------------------------------------ |
 | `agents.defaults.heartbeat`          | object \| null | 见下方 | 心跳配置                                               |
 | `agents.running`                     | object         | 见下方 | Agent 运行时行为配置                                   |
-| `agents.language`                    | string         | `"zh"` | Agent 提示词 MD 文件的语言（`"en"` 或 `"zh"`）         |
+| `agents.language`                    | string         | `"zh"` | Agent 提示词 MD 文件的语言（`"zh"` / `"en"` / `"ru"`） |
 | `agents.installed_md_files_language` | string \| null | `null` | 记录当前已安装的 MD 文件语言；由 `copaw init` 自动管理 |
 
 **`agents.running`** — Agent 运行时行为配置
@@ -234,6 +239,23 @@ copaw app
 | `end`   | string | `"22:00"` | 结束时间（HH:MM，24 小时制） |
 
 > 详细指南请看 [心跳](./heartbeat)。
+
+---
+
+#### `user_timezone` — 用户时区
+
+| 字段            | 类型   | 默认值         | 说明                                                                                      |
+| --------------- | ------ | -------------- | ----------------------------------------------------------------------------------------- |
+| `user_timezone` | string | _（系统时区）_ | IANA 时区名称（如 `"Asia/Shanghai"`、`"America/New_York"`）。默认为启动时检测到的系统时区 |
+
+该时区用于：
+
+- Agent 系统提示词中显示的当前时间
+- `get_current_time` 工具
+- 新建定时任务的默认时区（CLI 和控制台）
+- 心跳活跃时段判断
+
+也可以在控制台（Agent → 运行配置）中修改。
 
 ---
 
@@ -278,11 +300,17 @@ CoPaw 需要 LLM 提供商才能运行。有三种设置方式：
 
 ### 内置提供商
 
-| 提供商             | ID           | 默认 Base URL                                       | API Key 前缀 |
-| ------------------ | ------------ | --------------------------------------------------- | ------------ |
-| ModelScope（魔搭） | `modelscope` | `https://api-inference.modelscope.cn/v1`            | `ms`         |
-| DashScope（灵积）  | `dashscope`  | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `sk`         |
-| 自定义             | `custom`     | _（你自己填）_                                      | _（任意）_   |
+| 提供商                 | ID                  | 默认 Base URL                                       | API Key 前缀 |
+| ---------------------- | ------------------- | --------------------------------------------------- | ------------ |
+| ModelScope（魔搭）     | `modelscope`        | `https://api-inference.modelscope.cn/v1`            | `ms`         |
+| DashScope（灵积）      | `dashscope`         | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `sk`         |
+| 阿里云百炼 Coding Plan | `aliyun-codingplan` | `https://coding.dashscope.aliyuncs.com/v1`          | `sk-sp`      |
+| OpenAI                 | `openai`            | `https://api.openai.com/v1`                         | _（任意）_   |
+| Azure OpenAI           | `azure-openai`      | _（你自己填）_                                      | _（任意）_   |
+| Anthropic              | `anthropic`         | `https://api.anthropic.com`                         | _（任意）_   |
+| Ollama                 | `ollama`            | `http://localhost:11434`                            | _（无需）_   |
+| LM Studio              | `lmstudio`          | `http://localhost:1234/v1`                          | _（无需）_   |
+| 自定义                 | `custom`            | _（你自己填）_                                      | _（任意）_   |
 
 每个提供商需要设置：
 
@@ -399,7 +427,7 @@ CoPaw 拥有跨对话的持久记忆能力：自动压缩上下文，并将关�
 | 文件             | 核心职责                            | 读写属性                                           | 关键内容                                                                  |
 | ---------------- | ----------------------------------- | -------------------------------------------------- | ------------------------------------------------------------------------- |
 | **SOUL.md**      | 定义 Agent 的**价值观与行为准则**   | 只读（由开发者/用户预先定义）                      | 真心帮忙不敷衍；有自己的观点不盲从；先自己想办法再问人；尊重隐私不越权    |
-| **PROFILE.md**   | 记录 Agent 的**身份**和**用户画像** | 读写（BOOTSTRAP 自动生成，之后可手动或控制台修改） | Agent 侧：名字、定位、风格、能力范围；用户侧：名字、时区、偏好、背景      |
+| **PROFILE.md**   | 记录 Agent 的**身份**和**用户画像** | 读写（BOOTSTRAP 自动生成，之后可手动或控制台修改） | Agent 侧：名字、定位、风格、能力范围；用户侧：名字、偏好、背景            |
 | **BOOTSTRAP.md** | 新 Agent 的**首次运行引导流程**     | 一次性（引导完成后自我删除 ✂️）                    | ① 自我介绍 → ② 了解用户 → ③ 写入 PROFILE.md → ④ 阅读 SOUL.md → ⑤ 自我删除 |
 | **AGENTS.md**    | Agent 的**完整工作规范**            | 只读（日常运行核心参考）                           | 记忆系统读写规则；安全与权限；工具调用规范；Heartbeat 触发逻辑；操作边界  |
 | **MEMORY.md**    | 存储 Agent 的**工具设置与经验教训** | 读写（Agent 自行维护，也可手动编辑）               | SSH 配置与连接信息；本地环境路径/版本；用户个性化设置与偏好               |

@@ -14,7 +14,11 @@ from ...providers.provider_manager import ActiveModelsInfo, ProviderManager
 
 router = APIRouter(prefix="/models", tags=["models"])
 
-ChatModelName = Literal["OpenAIChatModel", "AnthropicChatModel"]
+ChatModelName = Literal[
+    "OpenAIChatModel",
+    "AnthropicChatModel",
+    "GeminiChatModel",
+]
 
 
 def get_provider_manager(request: Request) -> ProviderManager:
@@ -35,6 +39,14 @@ class ProviderConfigRequest(BaseModel):
     chat_model: Optional[ChatModelName] = Field(
         default=None,
         description="Chat model class name for protocol selection",
+    )
+    generate_kwargs: Optional[dict] = Field(
+        default_factory=dict,
+        description=(
+            "Configuration in json format, will be expanded "
+            "and passed to generation calls "
+            "(e.g., openai.chat.completions, anthropic.messages)."
+        ),
     )
 
 
@@ -84,6 +96,7 @@ async def configure_provider(
             "api_key": body.api_key,
             "base_url": body.base_url,
             "chat_model": body.chat_model,
+            "generate_kwargs": body.generate_kwargs,
         },
     )
     if not ok:
@@ -241,7 +254,6 @@ async def discover_models(
         try:
             result = await manager.fetch_provider_models(
                 provider_id,
-                update_target="extra_models",
             )
             success = True
         except Exception:
@@ -270,9 +282,11 @@ async def test_model(
         ok, msg = await provider.check_model_connection(model_id=body.model_id)
         return TestConnectionResponse(
             success=ok,
-            message="Model connection successful"
-            if ok
-            else f"Model connection failed: {msg}",
+            message=(
+                "Model connection successful"
+                if ok
+                else f"Model connection failed: {msg}"
+            ),
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

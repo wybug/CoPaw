@@ -17,7 +17,10 @@ import { workspaceApi } from "./modules/workspace";
 import { localModelApi } from "./modules/localModel";
 import { ollamaModelApi } from "./modules/ollamaModel";
 import { mcpApi } from "./modules/mcp";
+import { tokenUsageApi } from "./modules/tokenUsage";
 import { toolsApi } from "./modules/tools";
+import { securityApi } from "./modules/security";
+import { userTimezoneApi } from "./modules/userTimezone";
 
 export const api = {
   // Root
@@ -62,8 +65,16 @@ export const api = {
   // MCP Clients
   ...mcpApi,
 
+  // Token Usage
+  ...tokenUsageApi,
   // Tools
   ...toolsApi,
+
+  // Security
+  ...securityApi,
+
+  // User Timezone
+  ...userTimezoneApi,
 };
 
 export default api;
