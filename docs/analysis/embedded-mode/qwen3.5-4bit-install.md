@@ -26,13 +26,13 @@ cd /path/to/CoPaw
 bash scripts/run_local.sh
 
 # Install ModelScope dependency (for faster downloads in China)
-uv pip install modelscope --python .venv_local/bin/python
+uv pip install modelscope --python .venv/bin/python
 
 # Download the model from ModelScope (recommended for China users)
-.venv_local/bin/copaw models download mlx-community/Qwen3.5-4B-MLX-4bit --backend mlx --source modelscope
+.venv/bin/copaw models download mlx-community/Qwen3.5-4B-MLX-4bit --backend mlx --source modelscope
 
 # Start CoPaw
-.venv_local/bin/copaw app
+.venv/bin/copaw app
 ```
 
 Then configure via Console at http://127.0.0.1:8088:
@@ -221,7 +221,7 @@ When downloading from ModelScope, you need to install modelscope:
 pip install modelscope
 
 # Using uv
-uv pip install modelscope --python .venv_local/bin/python
+uv pip install modelscope --python .venv/bin/python
 ```
 
 ### "Model not found in manifest"

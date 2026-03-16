@@ -34,6 +34,7 @@ import {
   PanelLeftOpen,
   Copy,
   Check,
+  Store,
 } from "lucide-react";
 import api from "../api";
 import styles from "./index.module.less";
@@ -59,6 +60,7 @@ const KEY_TO_PATH: Record<string, string> = {
   tools: "/tools",
   mcp: "/mcp",
   workspace: "/workspace",
+  "enterprise-store": "/enterprise-store",
   models: "/models",
   environments: "/environments",
   "agent-config": "/agent-config",
@@ -321,6 +323,11 @@ export default function Sidebar({ selectedKey }: SidebarProps) {
         { key: "skills", label: t("nav.skills"), icon: <Sparkles size={16} /> },
         { key: "tools", label: t("nav.tools"), icon: <Wrench size={16} /> },
         { key: "mcp", label: t("nav.mcp"), icon: <Plug size={16} /> },
+        {
+          key: "enterprise-store",
+          label: t("nav.enterpriseStore"),
+          icon: <Store size={16} />,
+        },
         {
           key: "agent-config",
           label: t("nav.agentConfig"),

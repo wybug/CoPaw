@@ -1,0 +1,8 @@
+{
+  "name": "Integration Test Skill",
+  "content": "# Integration Test Skill\n\nTest content",
+  "files": {
+    "scripts/test.py": "print(\"hello\")"
+  },
+  "version": "1.0.0"
+}

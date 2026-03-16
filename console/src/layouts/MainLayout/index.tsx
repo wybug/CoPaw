@@ -15,6 +15,7 @@ import SkillsPage from "../../pages/Agent/Skills";
 import ToolsPage from "../../pages/Agent/Tools";
 import WorkspacePage from "../../pages/Agent/Workspace";
 import MCPPage from "../../pages/Agent/MCP";
+import EnterpriseStorePage from "../../pages/Agent/EnterpriseStore";
 import ModelsPage from "../../pages/Settings/Models";
 import EnvironmentsPage from "../../pages/Settings/Environments";
 
@@ -30,6 +31,7 @@ const pathToKey: Record<string, string> = {
   "/tools": "tools",
   "/mcp": "mcp",
   "/workspace": "workspace",
+  "/enterprise-store": "enterprise-store",
   "/agents": "agents",
   "/models": "models",
   "/environments": "environments",
@@ -66,6 +68,7 @@ export default function MainLayout() {
               <Route path="/tools" element={<ToolsPage />} />
               <Route path="/mcp" element={<MCPPage />} />
               <Route path="/workspace" element={<WorkspacePage />} />
+              <Route path="/enterprise-store" element={<EnterpriseStorePage />} />
               <Route path="/models" element={<ModelsPage />} />
               <Route path="/environments" element={<EnvironmentsPage />} />
               <Route path="/agent-config" element={<AgentConfigPage />} />

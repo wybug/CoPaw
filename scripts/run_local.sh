@@ -3,19 +3,20 @@
 # Usage: bash scripts/run_local.sh [OPTIONS] [--] [copaw_options]
 #
 # Quickly set up and run CoPaw from the current directory for local testing.
-# Creates an isolated virtual environment (.venv_local) and installs CoPaw
+# Creates an isolated virtual environment (.venv) and installs CoPaw
 # in editable mode. On macOS, mlx-lm is enabled by default.
 set -euo pipefail
 
 # ── Configuration ──────────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-LOCAL_ENV="$REPO_DIR/.venv_local"
+LOCAL_ENV="$REPO_DIR/.venv"
 PYTHON_VERSION="${PYTHON_VERSION:-3.12}"
 EXTRAS=""
 REINIT=false
 NO_MLX=false
 BACKEND=""  # mlx, llamacpp, or empty (auto-detect)
+ENTERPRISE=false  # Enterprise mode flag
 
 # ── Colors ────────────────────────────────────────────────────────────────────
 if [ -t 1 ]; then
@@ -44,8 +45,9 @@ Usage: bash scripts/run_local.sh [OPTIONS] [--] [copaw_options]
 ${BOLD}Options:${RESET}
   --backend BACKEND    Local model backend: mlx, llamacpp, or none
                        (default: auto-detect macOS for mlx)
+  --enterprise         Enable enterprise mode (with local Skills Hub)
   --no-mlx             Disable mlx-lm (equivalent to --backend none)
-  --reinit             Reinitialize environment (delete existing .venv_local)
+  --reinit             Reinitialize environment (delete existing .venv)
   --python VER         Specify Python version (default: 3.12)
   -h, --help           Show this help
 
@@ -56,7 +58,7 @@ ${BOLD}Environment Variables:${RESET}
 
 ${BOLD}Notes:${RESET}
   - First run automatically calls 'copaw init --defaults --accept-security'
-  - The virtual environment is stored at .venv_local/ in the repository
+  - The virtual environment is stored at .venv/ in the repository
   - Console frontend is built automatically if not present
   - Use --backend mlx on macOS for Apple Silicon MLX support
   - Use --backend llamacpp for llama.cpp support (cross-platform)
@@ -67,6 +69,7 @@ ${BOLD}Examples:${RESET}
   bash scripts/run_local.sh --backend llamacpp   # Use llama.cpp backend
   bash scripts/run_local.sh -- --port 9000       # Custom port
   bash scripts/run_local.sh --no-mlx             # Disable MLX (legacy)
+  bash scripts/run_local.sh --enterprise         # Enterprise mode with local Hub
   PYTHON_VERSION=3.11 bash scripts/run_local.sh  # Use Python 3.11
 
 EOF
@@ -88,6 +91,9 @@ while [[ $# -gt 0 ]]; do
         --python)
             PYTHON_VERSION="$2"
             shift 2 ;;
+        --enterprise)
+            ENTERPRISE=true
+            shift ;;
         -h|--help)
             show_help
             exit 0 ;;
@@ -232,7 +238,7 @@ setup_venv() {
     if [ -d "$LOCAL_ENV" ]; then
         info "Existing environment found, upgrading..."
     else
-        info "Creating Python $PYTHON_VERSION environment at .venv_local/..."
+        info "Creating Python $PYTHON_VERSION environment at .venv/..."
         uv venv "$LOCAL_ENV" --python "$PYTHON_VERSION"
     fi
 
@@ -267,13 +273,24 @@ maybe_init() {
     # Check if config exists in the default location
     if [ ! -f "$HOME/.copaw/config.json" ] && [ ! -f "$HOME/.copaw/working/config.json" ]; then
         info "First run detected - initializing with defaults..."
-        # Need both --defaults and --accept-security for non-interactive mode
-        "$LOCAL_ENV/bin/copaw" init --defaults --accept-security || warn "Initialization failed, but continuing..."
+        # Use the dedicated init script for consistent initialization
+        if bash "$SCRIPT_DIR/init.sh" --mode defaults --no-verify 2>&1 | while IFS= read -r line; do
+            printf "  [init] %s\n" "$line"
+        done; then
+            info "Initialization completed successfully"
+        else
+            warn "Initialization had warnings, but continuing..."
+        fi
     fi
 }
 
 # ── Main execution ─────────────────────────────────────────────────────────────
 main() {
+    # Delegate to enterprise mode script if requested
+    if [ "$ENTERPRISE" = "true" ]; then
+        exec bash "$SCRIPT_DIR/start_enterprise.sh" "${COPAW_ARGS[@]}"
+    fi
+
     echo ""
     printf "${BLUE}${BOLD}CoPaw Local Testing Environment${RESET}\n"
     echo "========================================"

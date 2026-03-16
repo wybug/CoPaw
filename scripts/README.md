@@ -2,6 +2,60 @@
 
 Run from **repo root**.
 
+## Initialize CoPaw
+
+```bash
+bash scripts/init.sh [OPTIONS]
+```
+
+- Initializes CoPaw configuration in a clean, consistent way
+- Creates `~/.copaw/` directory structure
+- Generates `config.json` with default settings
+- Creates `working.secret/` for sensitive data
+- Sets up model provider configuration
+- Verifies installation
+
+**Options:**
+- `-m, --mode MODE`: Init mode (`defaults`, `interactive`, `minimal`)
+- `--no-accept-security`: Require manual confirmation for security prompts
+- `--skip-working-secret`: Skip creating working.secret directory
+- `--no-verify`: Skip verification after initialization
+- `-h, --help`: Show help
+
+**Examples:**
+```bash
+bash scripts/init.sh                          # Initialize with defaults
+bash scripts/init.sh --mode interactive       # Interactive setup
+bash scripts/init.sh --mode minimal           # Minimal config
+```
+
+**Note:** This is the recommended way to initialize CoPaw after installation to avoid configuration confusion.
+
+## Run local testing
+
+```bash
+bash scripts/run_local.sh [OPTIONS] [--] [copaw_options]
+```
+
+- Quick start for local testing and development
+- Creates isolated virtual environment (`.venv/`)
+- Installs CoPaw in editable mode
+- Auto-runs initialization on first use
+
+**Options:**
+- `--backend BACKEND`: Local model backend (`mlx`, `llamacpp`, `none`)
+- `--enterprise`: Enable enterprise mode
+- `--no-mlx`: Disable mlx-lm (legacy)
+- `--reinit`: Reinitialize environment
+- `--python VER`: Specify Python version (default: 3.12)
+
+**Examples:**
+```bash
+bash scripts/run_local.sh                      # Start with defaults
+bash scripts/run_local.sh --backend mlx        # Force MLX backend
+bash scripts/run_local.sh -- --port 9000       # Custom port
+```
+
 ## Build wheel (with latest console)
 
 ```bash

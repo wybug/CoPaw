@@ -33,6 +33,7 @@
     "skills": "Навыки",
     "tools": "Инструменты",
     "mcp": "MCP",
+    "enterpriseStore": "Корпоративный магазин",
     "agentConfig": "Конфигурация",
     "settings": "Настройки",
     "models": "Модели",
@@ -109,6 +110,21 @@
     "deleteConfirm": "Вы уверены, что хотите удалить этот MCP-клиент?",
     "deleteSuccess": "MCP-клиент успешно удалён",
     "deleteError": "Не удалось удалить MCP-клиент"
+  },
+  "enterpriseStore": {
+    "title": "Корпоративный магазин",
+    "description": "Просматривайте и устанавливайте навыки и MCP-серверы из корпоративного магазина",
+    "skillsStore": "Магазин навыков",
+    "mcpStore": "Магазин MCP",
+    "searchPlaceholder": "Поиск навыков или серверов...",
+    "searchFailed": "Поиск не удался",
+    "install": "Установить",
+    "installing": "Установка...",
+    "installSuccess": "{{name}} успешно установлен",
+    "installFailed": "Не удалось установить {{name}}",
+    "noResults": "Результатов не найдено",
+    "noSkills": "Нет доступных навыков",
+    "noMcpServers": "Нет доступных MCP-серверов"
   },
   "heartbeat": {
     "title": "Пульс",

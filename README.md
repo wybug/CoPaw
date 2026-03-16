@@ -103,6 +103,12 @@ copaw init --defaults
 copaw app
 ```
 
+> **Recommended for first-time users:** Use the init script for cleaner setup:
+> ```bash
+> bash scripts/init.sh   # after cloning or downloading source
+> copaw app
+> ```
+
 Then open **http://127.0.0.1:8088/** in your browser for the Console (chat with CoPaw, configure the agent). To talk in DingTalk, Feishu, QQ, etc., add a channel in the [docs](https://copaw.agentscope.io/docs/channels).
 
 ![Console](https://img.alicdn.com/imgextra/i4/O1CN01z9VY6z1uMad7pgrCj_!!6000000006023-2-tps-3822-2064.png)
@@ -169,9 +175,11 @@ irm https://copaw.agentscope.io/install.ps1 | iex
 Once installed, open a new terminal and run:
 
 ```bash
-copaw init --defaults   # or: copaw init (interactive)
+copaw init --defaults   # or: bash scripts/init.sh (recommended)
 copaw app
 ```
+
+> **Note:** The `scripts/init.sh` script provides a more comprehensive initialization with verification and post-setup tasks. Use it if you have the source code.
 
 <details>
 <summary><b>Install options</b></summary>

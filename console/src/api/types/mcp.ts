@@ -77,3 +77,56 @@ export interface MCPClientUpdateRequest {
   /** Working directory for stdio command */
   cwd?: string;
 }
+
+/**
+ * Hub MCP server types
+ */
+
+export interface HubMCPServerSpec {
+  /** Unique server slug identifier */
+  slug: string;
+  /** Server display name */
+  name: string;
+  /** Server description */
+  description: string;
+  /** Server version */
+  version: string;
+  /** MCP transport type */
+  transport: "stdio" | "streamable_http" | "sse";
+  /** Command to launch the MCP server */
+  command?: string;
+  /** Command-line arguments */
+  args?: string[];
+  /** Remote MCP endpoint URL for HTTP/SSE transports */
+  url?: string;
+  /** Environment variables */
+  env_vars?: Record<string, string>;
+  /** HTTP headers for remote transport */
+  headers?: Record<string, string>;
+  /** Working directory for stdio command */
+  cwd?: string;
+  /** Enterprise signature */
+  signature?: string;
+}
+
+export interface HubMCPServerResult {
+  /** Server slug */
+  slug: string;
+  /** Server name */
+  name: string;
+  /** Server description */
+  description: string;
+  /** Server version */
+  version: string;
+  /** Transport type */
+  transport: string;
+  /** Source URL */
+  source_url: string;
+}
+
+export interface InstallHubMCPServerRequest {
+  /** Server slug to install */
+  slug: string;
+  /** Whether to enable after installation */
+  enable?: boolean;
+}

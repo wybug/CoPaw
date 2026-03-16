@@ -313,8 +313,9 @@ fi
 
 echo "Then run:"
 echo ""
-printf "  ${BOLD}copaw init${RESET}       # first-time setup\n"
-printf "  ${BOLD}copaw app${RESET}        # start CoPaw\n"
+printf "  ${BOLD}bash scripts/init.sh${RESET}    # first-time setup (recommended)\n"
+printf "  ${BOLD}copaw init${RESET}              # or use copaw init directly\n"
+printf "  ${BOLD}copaw app${RESET}               # start CoPaw\n"
 echo ""
 printf "To upgrade later, re-run this installer.\n"
 printf "To uninstall, run: ${BOLD}copaw uninstall${RESET}\n"

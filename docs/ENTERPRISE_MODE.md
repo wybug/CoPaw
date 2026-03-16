@@ -9,6 +9,7 @@ Enterprise mode enables:
 - **Signature Verification**: All skills are cryptographically signed before installation
 - **Approval Workflow**: Skills require approval before being available for installation
 - **Audit Logging**: Track all skill operations (search, install, enable, disable)
+- **MCP Server Marketplace**: Pre-populated MCP servers for enterprise deployment
 
 ## Configuration
 
@@ -46,6 +47,9 @@ MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA...
 
 # Employee ID for audit logging
 export COPAW_EMPLOYEE_ID="EMP001"
+
+# MCP hub configuration (uses same server as skills hub)
+export COPAW_MCP_HUB_BASE_URL="http://your-server:9090"
 ```
 
 ## Environment Variables
@@ -68,6 +72,11 @@ export COPAW_EMPLOYEE_ID="EMP001"
 | `COPAW_SKILLS_HUB_BASE_URL` | Hub server URL | `https://clawhub.ai` |
 | `COPAW_SKILLS_HUB_PUBLIC_KEY` | Public key for verification (PEM format) | - |
 | `COPAW_EMPLOYEE_ID` | Employee ID for audit logs | `unknown` |
+| `COPAW_MCP_HUB_BASE_URL` | MCP hub server URL | `https://clawhub.ai` |
+| `COPAW_MCP_HUB_SEARCH_PATH` | MCP search endpoint path | `/api/v1/mcp/search` |
+| `COPAW_MCP_HUB_DETAIL_PATH` | MCP detail endpoint path | `/api/v1/mcp/servers/{slug}` |
+| `COPAW_MCP_HUB_HTTP_TIMEOUT` | HTTP request timeout (seconds) | `15` |
+| `COPAW_MCP_HUB_HTTP_RETRIES` | HTTP request retry count | `3` |
 
 ## Installation
 

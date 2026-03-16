@@ -31,7 +31,9 @@
     "agent": "エージェント",
     "workspace": "ワークスペース",
     "skills": "スキル",
+    "tools": "ツール",
     "mcp": "MCP",
+    "enterpriseStore": "エンタープライズストア",
     "agentConfig": "設定",
     "settings": "設定",
     "models": "モデル",
@@ -108,6 +110,21 @@
     "deleteConfirm": "このMCPクライアントを削除してもよろしいですか？",
     "deleteSuccess": "MCPクライアントを削除しました",
     "deleteError": "MCPクライアントの削除に失敗しました"
+  },
+  "enterpriseStore": {
+    "title": "エンタープライズストア",
+    "description": "エンタープライズストアからスキルとMCPサーバーを閲覧・インストールします",
+    "skillsStore": "スキルストア",
+    "mcpStore": "MCPストア",
+    "searchPlaceholder": "スキルまたはサーバーを検索...",
+    "searchFailed": "検索に失敗しました",
+    "install": "インストール",
+    "installing": "インストール中...",
+    "installSuccess": "{{name}}をインストールしました",
+    "installFailed": "{{name}}のインストールに失敗しました",
+    "noResults": "結果が見つかりません",
+    "noSkills": "利用可能なスキルがありません",
+    "noMcpServers": "利用可能なMCPサーバーがありません"
   },
   "heartbeat": {
     "title": "ハートビート",

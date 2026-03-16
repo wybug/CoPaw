@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from ...config import load_config, save_config
 from ...config.config import MCPClientConfig
+from ...agents.mcp_hub import search_hub_mcp_servers, get_hub_mcp_server
 
 router = APIRouter(prefix="/mcp", tags=["mcp"])
 
@@ -337,3 +338,101 @@ async def delete_mcp_client(
     save_config(config)
 
     return {"message": f"MCP client '{client_key}' deleted successfully"}
+
+
+# Marketplace endpoints
+
+
+class HubMCPServerResult(BaseModel):
+    """MCP server search result from hub."""
+
+    slug: str
+    name: str
+    description: str = ""
+    version: str = ""
+    transport: str = "stdio"
+    source_url: str = ""
+
+
+@router.get(
+    "/hub/search",
+    response_model=List[HubMCPServerResult],
+    summary="Search MCP servers on enterprise hub",
+)
+async def search_hub_servers(
+    q: str = "",
+    limit: int = 20,
+) -> List[HubMCPServerResult]:
+    """Search for MCP servers on the enterprise hub."""
+    try:
+        results = search_hub_mcp_servers(query=q, limit=limit)
+        return [
+            HubMCPServerResult(
+                slug=r.slug,
+                name=r.name,
+                description=r.description,
+                version=r.version,
+                transport=r.transport,
+                source_url=r.source_url,
+            )
+            for r in results
+        ]
+    except Exception as e:
+        # Return empty list on error rather than failing
+        raise HTTPException(503, detail=f"Failed to connect to MCP hub: {e}")
+
+
+class InstallHubMCPServerRequest(BaseModel):
+    """Request to install an MCP server from the hub."""
+
+    slug: str
+    enable: bool = True
+
+
+@router.post(
+    "/hub/install",
+    response_model=MCPClientInfo,
+    summary="Install MCP server from enterprise hub",
+    status_code=201,
+)
+async def install_hub_server(
+    request: InstallHubMCPServerRequest,
+) -> MCPClientInfo:
+    """Install an MCP server from the enterprise hub."""
+    # Get server details from hub
+    server_spec = get_hub_mcp_server(request.slug)
+    if not server_spec:
+        raise HTTPException(404, detail=f"MCP server '{request.slug}' not found on hub")
+
+    # Generate client key from slug
+    client_key = request.slug
+
+    # Create MCP client config from hub spec
+    config = load_config()
+
+    # Check if client already exists
+    if client_key in config.mcp.clients:
+        raise HTTPException(
+            409,
+            detail=f"MCP client '{client_key}' already exists. Use PUT to update.",
+        )
+
+    # Create new client config
+    new_client = MCPClientConfig(
+        name=server_spec.get("name", request.slug),
+        description=server_spec.get("description", ""),
+        enabled=request.enable,
+        transport=server_spec.get("transport", "stdio"),
+        url=server_spec.get("url", ""),
+        headers=server_spec.get("headers", {}),
+        command=server_spec.get("command", ""),
+        args=server_spec.get("args", []),
+        env=server_spec.get("env_vars", {}),
+        cwd=server_spec.get("cwd", ""),
+    )
+
+    # Add to config and save
+    config.mcp.clients[client_key] = new_client
+    save_config(config)
+
+    return _build_client_info(client_key, new_client)

@@ -33,6 +33,7 @@
     "skills": "Skills",
     "tools": "Tools",
     "mcp": "MCP",
+    "enterpriseStore": "Enterprise Store",
     "agentConfig": "Configuration",
     "settings": "Settings",
     "models": "Models",
@@ -109,6 +110,21 @@
     "deleteConfirm": "Are you sure you want to delete this MCP client?",
     "deleteSuccess": "MCP client deleted successfully",
     "deleteError": "Failed to delete MCP client"
+  },
+  "enterpriseStore": {
+    "title": "Enterprise Store",
+    "description": "Browse and install skills and MCP servers from the enterprise store",
+    "skillsStore": "Skills Store",
+    "mcpStore": "MCP Store",
+    "searchPlaceholder": "Search skills or servers...",
+    "searchFailed": "Search failed",
+    "install": "Install",
+    "installing": "Installing...",
+    "installSuccess": "{{name}} installed successfully",
+    "installFailed": "Failed to install {{name}}",
+    "noResults": "No results found",
+    "noSkills": "No skills available",
+    "noMcpServers": "No MCP servers available"
   },
   "heartbeat": {
     "title": "Heartbeat",

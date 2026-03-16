@@ -3,6 +3,8 @@ import type {
   MCPClientInfo,
   MCPClientCreateRequest,
   MCPClientUpdateRequest,
+  HubMCPServerResult,
+  InstallHubMCPServerRequest,
 } from "../types";
 
 export const mcpApi = {
@@ -49,5 +51,20 @@ export const mcpApi = {
   deleteMCPClient: (clientKey: string) =>
     request<{ message: string }>(`/mcp/${encodeURIComponent(clientKey)}`, {
       method: "DELETE",
+    }),
+
+  /**
+   * Search MCP servers on enterprise hub
+   */
+  searchHubMCPServers: (query: string = "", limit: number = 20) =>
+    request<HubMCPServerResult[]>(`/api/mcp/hub/search?q=${encodeURIComponent(query)}&limit=${limit}`),
+
+  /**
+   * Install MCP server from enterprise hub
+   */
+  installHubMCPServer: (body: InstallHubMCPServerRequest) =>
+    request<MCPClientInfo>("/api/mcp/hub/install", {
+      method: "POST",
+      body: JSON.stringify(body),
     }),
 };

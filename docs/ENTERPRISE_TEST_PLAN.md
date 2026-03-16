@@ -35,10 +35,10 @@ This test plan covers comprehensive testing for CoPaw Enterprise Skills Hub, inc
 **运行命令 / Run Command:**
 ```bash
 # 使用 uv 环境
-.venv_local/bin/python -m pytest tests/integration/test_enterprise_hub.py::TestSignatureModule -v
+.venv/bin/python -m pytest tests/integration/test_enterprise_hub.py::TestSignatureModule -v
 
 # 或直接运行
-.venv_local/bin/python tests/integration/test_enterprise_hub.py TestSignatureModule
+.venv/bin/python tests/integration/test_enterprise_hub.py TestSignatureModule
 ```
 
 ### 1.2 存储模块测试 / Storage Module Tests
@@ -73,8 +73,8 @@ This test plan covers comprehensive testing for CoPaw Enterprise Skills Hub, inc
 
 **运行命令 / Run Command:**
 ```bash
-.venv_local/bin/python -m pytest tests/integration/test_enterprise_hub.py::TestSkillStorage -v
-.venv_local/bin/python -m pytest tests/integration/test_enterprise_hub.py::TestApprovalStorage -v
+.venv/bin/python -m pytest tests/integration/test_enterprise_hub.py::TestSkillStorage -v
+.venv/bin/python -m pytest tests/integration/test_enterprise_hub.py::TestApprovalStorage -v
 ```
 
 ---
@@ -106,7 +106,7 @@ This test plan covers comprehensive testing for CoPaw Enterprise Skills Hub, inc
 
 **运行命令 / Run Command:**
 ```bash
-.venv_local/bin/python -m pytest tests/integration/test_enterprise_hub.py::TestCopawEnterpriseMode -v
+.venv/bin/python -m pytest tests/integration/test_enterprise_hub.py::TestCopawEnterpriseMode -v
 ```
 
 ---
@@ -202,7 +202,7 @@ curl -X POST http://localhost:9998/api/v1/approvals/{approval_id}/approve \
 
 **运行完整集成测试 / Run Full Integration Test:**
 ```bash
-.venv_local/bin/python -m pytest tests/integration/test_enterprise_hub.py::TestIntegration -v
+.venv/bin/python -m pytest tests/integration/test_enterprise_hub.py::TestIntegration -v
 ```
 
 ---
@@ -234,25 +234,25 @@ curl -X POST http://localhost:9998/api/v1/approvals/{approval_id}/approve \
 
 ### 快速测试 / Quick Test
 ```bash
-.venv_local/bin/python -m pytest tests/integration/test_enterprise_hub.py -v
+.venv/bin/python -m pytest tests/integration/test_enterprise_hub.py -v
 ```
 
 ### 详细输出 / Verbose Output
 ```bash
-.venv_local/bin/python -m pytest tests/integration/test_enterprise_hub.py -vv --tb=short
+.venv/bin/python -m pytest tests/integration/test_enterprise_hub.py -vv --tb=short
 ```
 
 ### 生成覆盖率报告 / Generate Coverage Report
 ```bash
-.venv_local/bin/python -m pytest tests/integration/test_enterprise_hub.py --cov=hub_enterprise --cov-report=html
+.venv/bin/python -m pytest tests/integration/test_enterprise_hub.py --cov=hub_enterprise --cov-report=html
 ```
 
 ### 只运行特定测试类 / Run Specific Test Class
 ```bash
-.venv_local/bin/python -m pytest tests/integration/test_enterprise_hub.py::TestSignatureModule -v
-.venv_local/bin/python -m pytest tests/integration/test_enterprise_hub.py::TestSkillStorage -v
-.venv_local/bin/python -m pytest tests/integration/test_enterprise_hub.py::TestCopawEnterpriseMode -v
-.venv_local/bin/python -m pytest tests/integration/test_enterprise_hub.py::TestIntegration -v
+.venv/bin/python -m pytest tests/integration/test_enterprise_hub.py::TestSignatureModule -v
+.venv/bin/python -m pytest tests/integration/test_enterprise_hub.py::TestSkillStorage -v
+.venv/bin/python -m pytest tests/integration/test_enterprise_hub.py::TestCopawEnterpriseMode -v
+.venv/bin/python -m pytest tests/integration/test_enterprise_hub.py::TestIntegration -v
 ```
 
 ---
