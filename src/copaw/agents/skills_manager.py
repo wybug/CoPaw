@@ -711,8 +711,8 @@ class SkillService:
 
         This only deletes skills from customized_skills directory.
         Built-in skills cannot be deleted.
-        If the skill is currently active, it will remain in active_skills
-        until manually disabled.
+        If the skill is currently active, it will be removed from active_skills
+        as well to prevent it from reappearing after sync.
 
         Args:
             name: Skill name to delete.
@@ -731,11 +731,23 @@ class SkillService:
             return False
 
         try:
+            # Delete from customized_skills
             shutil.rmtree(skill_dir)
             logger.debug(
                 "Deleted skill '%s' from customized_skills.",
                 name,
             )
+
+            # Also delete from active_skills to prevent reappearing after sync
+            active_dir = get_active_skills_dir()
+            active_skill_dir = active_dir / name
+            if active_skill_dir.exists():
+                shutil.rmtree(active_skill_dir)
+                logger.debug(
+                    "Deleted skill '%s' from active_skills.",
+                    name,
+                )
+
             return True
         except Exception as e:
             logger.error(
