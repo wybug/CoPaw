@@ -5,6 +5,17 @@ from __future__ import annotations
 import click
 
 from ..agents.skills_manager import SkillService, list_available_skills
+from ..agents.skills_hub import (
+    HubInstallResult,
+    _get_employee_id,
+    _get_enterprise_allowed_sources,
+    _hub_base_url,
+    _hub_detail_path,
+    _is_enterprise_mode,
+    _join_url,
+    install_skill_from_hub,
+    search_hub_skills,
+)
 from .utils import prompt_checkbox, prompt_confirm
 
 
@@ -137,3 +148,104 @@ def list_cmd() -> None:
 @skills_group.command("config")
 def configure_cmd() -> None:
     configure_skills_interactive()
+
+
+@skills_group.command("search")
+@click.argument("query", default="")
+@click.option("--limit", default=20, help="最大结果数")
+def search_cmd(query: str, limit: int) -> None:
+    """从技能中心搜索技能。"""
+    try:
+        results = search_hub_skills(query, limit)
+
+        click.echo(f"\n{'=' * 50}")
+        click.echo(f"  找到 {len(results)} 个技能")
+        click.echo(f"{'=' * 50}\n")
+
+        if not results:
+            click.echo("未找到匹配的技能。")
+            if _is_enterprise_mode():
+                click.echo("\n企业模式已启用，仅显示企业技能中心的技能。")
+            return
+
+        for skill in results:
+            click.echo(f"名称: {skill.name}")
+            click.echo(f"标识: {skill.slug}")
+            desc = skill.description[:80] + "..." if len(skill.description) > 80 else skill.description
+            click.echo(f"描述: {desc}")
+            if skill.version:
+                click.echo(f"版本: {skill.version}")
+            click.echo("---")
+
+        # Show install hint
+        click.echo(f"\n提示: 使用 'copaw skills install <标识>' 安装技能")
+
+    except Exception as e:
+        click.echo(f"搜索失败: {e}", err=True)
+        raise click.ClickException(str(e))
+
+
+@skills_group.command("install")
+@click.argument("slug")
+@click.option("--version", default="", help="指定版本")
+@click.option("--no-enable", is_flag=True, help="安装后不启用")
+@click.option("--force", is_flag=True, help="覆盖已存在的技能")
+def install_cmd(slug: str, version: str, no_enable: bool, force: bool) -> None:
+    """从技能中心安装技能（支持通过 slug 安装）。"""
+    from ..agents.skills_hub import _enforce_enterprise_mode
+
+    # Enforce enterprise mode restrictions
+    _enforce_enterprise_mode()
+
+    # Build bundle URL
+    if _is_enterprise_mode():
+        base_url = _hub_base_url()
+        detail_path = _hub_detail_path().format(slug=slug)
+        bundle_url = _join_url(base_url, detail_path)
+        click.echo(f"企业模式：从 {bundle_url} 安装")
+        click.echo(f"员工 ID: {_get_employee_id()}")
+        click.echo("将进行签名验证...")
+    else:
+        # Standard mode: use clawhub.ai
+        bundle_url = f"https://clawhub.ai/skills/{slug}"
+        click.echo(f"从 {bundle_url} 安装")
+
+    try:
+        result = install_skill_from_hub(
+            bundle_url=bundle_url,
+            version=version,
+            enable=not no_enable,
+            overwrite=force,
+        )
+
+        click.echo(f"\n{'=' * 50}")
+        click.echo("  安装成功")
+        click.echo(f"{'=' * 50}")
+        click.echo(f"名称: {result.name}")
+        click.echo(f"状态: {'已启用' if result.enabled else '已安装但未启用'}")
+        click.echo(f"来源: {result.source_url}")
+
+    except Exception as e:
+        click.echo(f"\n{'=' * 50}", err=True)
+        click.echo("  安装失败", err=True)
+        click.echo(f"{'=' * 50}", err=True)
+        click.echo(f"错误: {e}", err=True)
+        raise click.ClickException(str(e))
+
+
+@skills_group.command("security")
+def security_cmd() -> None:
+    """显示当前安全配置。"""
+    click.echo("=== 技能安全配置 ===\n")
+
+    is_enterprise = _is_enterprise_mode()
+    mode_str = "企业" if is_enterprise else "标准"
+    click.echo(f"模式: {mode_str}")
+
+    if is_enterprise:
+        click.echo(f"Hub URL: {_hub_base_url()}")
+        sources = _get_enterprise_allowed_sources()
+        click.echo(f"允许的来源: {', '.join(sources)}")
+        click.echo(f"\n配置：通过 COPAW_SKILLS_ALLOWED_SOURCES 环境变量")
+    else:
+        click.echo("标准模式：无限制")

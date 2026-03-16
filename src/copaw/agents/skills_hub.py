@@ -2,6 +2,7 @@
 """Skills hub client and install helpers."""
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -19,6 +20,20 @@ import frontmatter
 from .skills_manager import SkillService
 
 logger = logging.getLogger(__name__)
+
+# Enterprise mode: signature verification support
+try:
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import padding
+    from cryptography.hazmat.backends import default_backend
+
+    _CRYPTOGRAPHY_AVAILABLE = True
+except ImportError:
+    _CRYPTOGRAPHY_AVAILABLE = False
+    logger.warning(
+        "cryptography library not available. "
+        "Signature verification will be disabled."
+    )
 
 
 @dataclass
@@ -121,6 +136,215 @@ def _hub_file_path() -> str:
 
 def _join_url(base: str, path: str) -> str:
     return f"{base.rstrip('/')}/{path.lstrip('/')}"
+
+
+# Enterprise mode functions
+
+def _get_employee_id() -> str:
+    """Get employee ID from environment variable.
+
+    Returns:
+        Employee ID for audit logging.
+    """
+    return os.environ.get("COPAW_EMPLOYEE_ID", "unknown")
+
+
+def _get_enterprise_public_key() -> str | None:
+    """Get enterprise public key from environment variable.
+
+    Returns:
+        Public key in PEM format, or None if not configured.
+    """
+    return os.environ.get("COPAW_SKILLS_HUB_PUBLIC_KEY")
+
+
+def _is_enterprise_mode() -> bool:
+    """Check if enterprise mode is enabled.
+
+    Configuration of a public key indicates enterprise mode is enabled.
+    In enterprise mode:
+    1. Access to public ClawHub is prohibited
+    2. Signature verification is mandatory
+    3. Unsigned skills are rejected
+
+    Returns:
+        True if enterprise mode is enabled.
+    """
+    public_key = _get_enterprise_public_key()
+    return bool(public_key)
+
+
+def _enforce_enterprise_mode() -> None:
+    """Enforce enterprise mode: prohibit access to public Hub.
+
+    Raises:
+        ValueError: If enterprise mode is enabled but trying to access public Hub.
+    """
+    if _is_enterprise_mode():
+        base_url = _hub_base_url()
+        if "clawhub.ai" in base_url.lower():
+            raise ValueError(
+                "Enterprise mode is enabled. Access to public ClawHub is prohibited. "
+                "Please set COPAW_SKILLS_HUB_BASE_URL to point to your enterprise Hub server."
+            )
+
+
+def _get_enterprise_allowed_sources() -> list[str]:
+    """Get allowed skill sources for enterprise mode.
+
+    In enterprise mode, only allow installing skills from configured sources.
+    This is read from the COPAW_SKILLS_ALLOWED_SOURCES environment variable.
+
+    Returns:
+        List of allowed hostnames (e.g., ['skills.company.com', 'github.com']).
+        Returns empty list if not in enterprise mode.
+    """
+    if not _is_enterprise_mode():
+        return []
+
+    # Read from environment variable
+    sources_str = os.environ.get("COPAW_SKILLS_ALLOWED_SOURCES", "")
+
+    if not sources_str:
+        # Default: only allow the configured hub
+        base_url = _hub_base_url()
+        parsed = urlparse(base_url)
+        return [parsed.netloc.lower()] if parsed.netloc else []
+
+    # Parse comma-separated list
+    return [s.strip().lower() for s in sources_str.split(",") if s.strip()]
+
+
+def _validate_enterprise_source(url: str) -> None:
+    """Validate that a skill source is allowed in enterprise mode.
+
+    In enterprise mode, only allow installing skills from configured sources.
+    In standard mode (no public key set), all sources are allowed.
+
+    Args:
+        url: The URL to validate.
+
+    Raises:
+        ValueError: If enterprise mode is enabled and the source is not allowed.
+    """
+    if not _is_enterprise_mode():
+        return  # Standard mode: no restrictions
+
+    allowed = _get_enterprise_allowed_sources()
+
+    if not allowed:
+        # This should not happen in enterprise mode, but handle gracefully
+        return
+
+    parsed = urlparse(url)
+    hostname = parsed.netloc.lower()
+
+    # Check if hostname matches any allowed source (including subdomains)
+    is_allowed = any(
+        hostname == source or hostname.endswith(f".{source}")
+        for source in allowed
+    )
+
+    if not is_allowed:
+        allowed_list = ", ".join(allowed)
+        raise ValueError(
+            f"[企业模式] 只允许从以下来源安装技能：{allowed_list}\n"
+            f"当前来源：{hostname}\n"
+            f"请配置 COPAW_SKILLS_ALLOWED_SOURCES 环境变量。"
+        )
+
+
+def _verify_bundle_signature(
+    bundle: dict[str, Any],
+    signature: str,
+) -> bool:
+    """Verify skill bundle signature.
+
+    Args:
+        bundle: Skill bundle data.
+        signature: Base64-encoded signature.
+
+    Returns:
+        True if signature is valid.
+
+    Raises:
+        RuntimeError: If cryptography is not available or public key is missing.
+    """
+    if not _CRYPTOGRAPHY_AVAILABLE:
+        raise RuntimeError("cryptography library is required for signature verification")
+
+    public_key_pem = _get_enterprise_public_key()
+    if not public_key_pem:
+        raise RuntimeError("Public key not configured in enterprise mode")
+
+    try:
+        public_key = serialization.load_pem_public_key(
+            public_key_pem.encode(),
+            backend=default_backend(),
+        )
+
+        # Calculate bundle hash
+        normalized = json.dumps(
+            bundle,
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+        bundle_hash = hashlib.sha256(normalized.encode()).digest()
+
+        # Verify signature
+        signature_bytes = base64.b64decode(signature)
+        public_key.verify(
+            signature_bytes,
+            bundle_hash,
+            padding.PSS(
+                mgf=padding.MGF1(hashes.SHA256()),
+                salt_length=padding.PSS.MAX_LENGTH,
+            ),
+            hashes.SHA256(),
+        )
+        return True
+    except Exception:
+        return False
+
+
+def _send_audit_log(
+    action: str,
+    resource_name: str,
+    details: dict[str, Any],
+    status: str = "success",
+) -> None:
+    """Send audit log to enterprise backend.
+
+    Args:
+        action: Action type (install_skill/enable_skill/disable_skill/search_skill).
+        resource_name: Resource name (skill name).
+        details: Additional details.
+        status: Operation status (success/failed).
+    """
+    if not _is_enterprise_mode():
+        return
+
+    try:
+        base_url = _hub_base_url()
+        employee_id = _get_employee_id()
+
+        log_data = {
+            "employee_id": employee_id,
+            "action": action,
+            "resource_type": "skill",
+            "resource_name": resource_name,
+            "details": details,
+            "status": status,
+        }
+
+        # Send audit log asynchronously (don't fail on errors)
+        _http_json_get(
+            _join_url(base_url, "/api/v1/audit/logs"),
+            params=log_data,
+        )
+    except Exception as e:
+        # Audit log failure should not affect main flow
+        logger.warning("Failed to send audit log: %s", e)
 
 
 # pylint: disable-next=too-many-branches,too-many-statements
@@ -481,6 +705,35 @@ def _normalize_bundle(
             name = ""
     if not name:
         raise ValueError("Hub bundle missing skill name")
+
+    # Enterprise mode signature verification
+    if _is_enterprise_mode():
+        # Extract signature from response
+        signature = ""
+        if isinstance(data, dict):
+            signature = data.get("signature", "")
+        elif isinstance(data, dict) and isinstance(data.get("skill"), dict):
+            signature = data["skill"].get("signature", "")
+
+        if not signature:
+            raise ValueError(
+                "Enterprise mode is enabled. Rejecting unsigned skill. "
+                "All skills must be sourced from the enterprise Hub and approved."
+            )
+
+        # Build bundle for verification
+        verify_bundle = {
+            "name": name,
+            "content": content,
+            "references": references,
+            "scripts": scripts,
+        }
+
+        if not _verify_bundle_signature(verify_bundle, signature):
+            raise ValueError(
+                "Enterprise Hub skill signature verification failed. "
+                "The skill may have been tampered with."
+            )
 
     return name, content, references, scripts, extra_files
 
@@ -1082,6 +1335,9 @@ def _fetch_bundle_from_clawhub_slug(
 
 
 def search_hub_skills(query: str, limit: int = 20) -> list[HubSkillResult]:
+    # Enterprise mode check: prohibit access to public Hub
+    _enforce_enterprise_mode()
+
     base = _hub_base_url()
     search_url = _join_url(base, _hub_search_path())
     data = _http_json_get(search_url, {"q": query, "limit": limit})
@@ -1104,6 +1360,14 @@ def search_hub_skills(query: str, limit: int = 20) -> list[HubSkillResult]:
                 source_url=str(item.get("url") or ""),
             ),
         )
+
+    # Send audit log
+    _send_audit_log(
+        action="search_skill",
+        resource_name=f"query:{query}",
+        details={"query": query, "results_count": len(results)},
+    )
+
     return results
 
 
@@ -1115,6 +1379,12 @@ def install_skill_from_hub(
     enable: bool = True,
     overwrite: bool = False,
 ) -> HubInstallResult:
+    # Enterprise mode check: prohibit access to public Hub
+    _enforce_enterprise_mode()
+
+    # Enterprise mode: validate source
+    _validate_enterprise_source(bundle_url)
+
     source_url = bundle_url
     data: Any
 
@@ -1152,33 +1422,54 @@ def install_skill_from_hub(
                     # Backward-compatible fallback for direct bundle JSON URLs
                     data = _http_json_get(bundle_url)
 
-    name, content, references, scripts, extra_files = _normalize_bundle(data)
-    if not name:
-        fallback = urlparse(bundle_url).path.strip("/").split("/")[-1]
-        name = _safe_fallback_name(fallback)
+    try:
+        name, content, references, scripts, extra_files = _normalize_bundle(data)
+        if not name:
+            fallback = urlparse(bundle_url).path.strip("/").split("/")[-1]
+            name = _safe_fallback_name(fallback)
 
-    created = SkillService.create_skill(
-        name=name,
-        content=content,
-        overwrite=overwrite,
-        references=references,
-        scripts=scripts,
-        extra_files=extra_files,
-    )
-    if not created:
-        raise RuntimeError(
-            f"Failed to create skill '{name}'. "
-            "Try overwrite=true if it already exists.",
+        created = SkillService.create_skill(
+            name=name,
+            content=content,
+            overwrite=overwrite,
+            references=references,
+            scripts=scripts,
+            extra_files=extra_files,
+        )
+        if not created:
+            raise RuntimeError(
+                f"Failed to create skill '{name}'. "
+                "Try overwrite=true if it already exists.",
+            )
+
+        enabled = False
+        if enable:
+            enabled = SkillService.enable_skill(name, force=True)
+            if not enabled:
+                logger.warning("Skill '%s' imported but enable failed", name)
+
+        # Send audit log
+        _send_audit_log(
+            action="install_skill",
+            resource_name=name,
+            details={
+                "source_url": source_url,
+                "version": version,
+                "enabled": enabled,
+            },
         )
 
-    enabled = False
-    if enable:
-        enabled = SkillService.enable_skill(name, force=True)
-        if not enabled:
-            logger.warning("Skill '%s' imported but enable failed", name)
-
-    return HubInstallResult(
-        name=name,
-        enabled=enabled,
-        source_url=source_url,
-    )
+        return HubInstallResult(
+            name=name,
+            enabled=enabled,
+            source_url=source_url,
+        )
+    except Exception as e:
+        # Send audit log on failure
+        _send_audit_log(
+            action="install_skill",
+            resource_name=bundle_url,
+            details={"error": str(e), "source_url": source_url},
+            status="failed",
+        )
+        raise
