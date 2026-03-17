@@ -36,9 +36,11 @@ import {
   Copy,
   Check,
   BarChart3,
+  Bot,
 } from "lucide-react";
 import api from "../api";
 import styles from "./index.module.less";
+import { useTheme } from "../contexts/ThemeContext";
 
 const { Sider } = Layout;
 
@@ -61,6 +63,7 @@ const KEY_TO_PATH: Record<string, string> = {
   tools: "/tools",
   mcp: "/mcp",
   workspace: "/workspace",
+  agents: "/agents",
   models: "/models",
   environments: "/environments",
   "agent-config": "/agent-config",
@@ -192,6 +195,7 @@ function CopyButton({ text }: { text: string }) {
 export default function Sidebar({ selectedKey }: SidebarProps) {
   const navigate = useNavigate();
   const { t, i18n } = useTranslation();
+  const { isDark } = useTheme();
   const [collapsed, setCollapsed] = useState(false);
   const [openKeys, setOpenKeys] = useState<string[]>(DEFAULT_OPEN_KEYS);
   const [version, setVersion] = useState<string>("");
@@ -337,6 +341,7 @@ export default function Sidebar({ selectedKey }: SidebarProps) {
       label: t("nav.settings"),
       icon: <Cpu size={16} />,
       children: [
+        { key: "agents", label: t("nav.agents"), icon: <Bot size={16} /> },
         { key: "models", label: t("nav.models"), icon: <Box size={16} /> },
         {
           key: "environments",
@@ -362,12 +367,16 @@ export default function Sidebar({ selectedKey }: SidebarProps) {
       collapsed={collapsed}
       onCollapse={setCollapsed}
       width={275}
-      className={styles.sider}
+      className={`${styles.sider}${isDark ? ` ${styles.siderDark}` : ""}`}
     >
       <div className={styles.siderTop}>
         {!collapsed && (
           <div className={styles.logoWrapper}>
-            <img src="/logo.png" alt="CoPaw" className={styles.logoImg} />
+            <img
+              src={isDark ? "/dark-logo.png" : "/logo.png"}
+              alt="CoPaw"
+              className={styles.logoImg}
+            />
             {version && (
               <Badge dot={!!hasUpdate} color="red" offset={[4, 18]}>
                 <span
@@ -408,6 +417,7 @@ export default function Sidebar({ selectedKey }: SidebarProps) {
           if (path) navigate(path);
         }}
         items={menuItems}
+        theme={isDark ? "dark" : "light"}
       />
 
       <Modal

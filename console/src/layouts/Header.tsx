@@ -1,5 +1,7 @@
 import { Layout, Space } from "antd";
 import LanguageSwitcher from "../components/LanguageSwitcher";
+import ThemeToggleButton from "../components/ThemeToggleButton";
+import AgentSelector from "../components/AgentSelector";
 import { useTranslation } from "react-i18next";
 import {
   FileTextOutlined,
@@ -64,6 +66,7 @@ export default function Header({ selectedKey }: HeaderProps) {
         {t(keyToLabel[selectedKey] || "nav.chat")}
       </span>
       <Space size="middle">
+        <AgentSelector />
         <Tooltip title={t("header.changelog")}>
           <Button
             icon={<FileTextOutlined />}
@@ -101,6 +104,7 @@ export default function Header({ selectedKey }: HeaderProps) {
           </Button>
         </Tooltip>
         <LanguageSwitcher />
+        <ThemeToggleButton />
       </Space>
     </AntHeader>
   );
