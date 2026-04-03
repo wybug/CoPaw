@@ -3,15 +3,25 @@ import os
 import json
 from pathlib import Path
 from typing import Optional, Union, Dict, List, Literal
+
 from pydantic import BaseModel, Field, ConfigDict, model_validator
 import shortuuid
 
-from ..providers.models import ModelSlotConfig
+from .timezone import detect_system_timezone
 from ..constant import (
     HEARTBEAT_DEFAULT_EVERY,
     HEARTBEAT_DEFAULT_TARGET,
+    LLM_ACQUIRE_TIMEOUT,
+    LLM_BACKOFF_BASE,
+    LLM_BACKOFF_CAP,
+    LLM_MAX_CONCURRENT,
+    LLM_MAX_RETRIES,
+    LLM_MAX_QPM,
+    LLM_RATE_LIMIT_JITTER,
+    LLM_RATE_LIMIT_PAUSE,
+    WORKING_DIR,
 )
-from .timezone import detect_system_timezone
+from ..providers.models import ModelSlotConfig
 
 
 def generate_short_agent_id() -> str:
@@ -50,17 +60,24 @@ class DiscordConfig(BaseChannelConfig):
     bot_token: str = ""
     http_proxy: str = ""
     http_proxy_auth: str = ""
+    accept_bot_messages: bool = False
 
 
 class DingTalkConfig(BaseChannelConfig):
     client_id: str = ""
     client_secret: str = ""
+    message_type: str = "markdown"
+    card_template_id: str = ""
+    card_template_key: str = "content"
+    robot_code: str = ""
     media_dir: Optional[str] = None
+    card_auto_layout: bool = False
 
 
 class FeishuConfig(BaseChannelConfig):
     """Feishu/Lark channel: app_id, app_secret; optional encrypt_key,
     verification_token for event handler. media_dir for received media.
+    domain: 'feishu' for China, 'lark' for international.
     """
 
     app_id: str = ""
@@ -68,12 +85,14 @@ class FeishuConfig(BaseChannelConfig):
     encrypt_key: str = ""
     verification_token: str = ""
     media_dir: Optional[str] = None
+    domain: Literal["feishu", "lark"] = "feishu"
 
 
 class QQConfig(BaseChannelConfig):
     app_id: str = ""
     client_secret: str = ""
     markdown_enabled: bool = True
+    max_reconnect_attempts: int = 100
 
 
 class TelegramConfig(BaseChannelConfig):
@@ -113,6 +132,7 @@ class ConsoleConfig(BaseChannelConfig):
     """Console channel: prints agent responses to stdout."""
 
     enabled: bool = True
+    media_dir: Optional[str] = None
 
 
 class WecomConfig(BaseChannelConfig):
@@ -157,6 +177,22 @@ class XiaoYiConfig(BaseChannelConfig):
     task_timeout_ms: int = 3600000  # 1 hour task timeout
 
 
+class WeixinConfig(BaseChannelConfig):
+    """WeChat (iLink Bot) personal account channel config.
+
+    bot_token:      Bearer token obtained after QR code login.
+    bot_token_file: Path to persist/load the bot_token
+                    (default ~/.copaw/weixin_bot_token).
+    base_url:       iLink API base URL (leave empty to use default).
+    media_dir:      Local directory for downloaded media files.
+    """
+
+    bot_token: str = ""
+    bot_token_file: str = ""
+    base_url: str = ""
+    media_dir: Optional[str] = None
+
+
 class ChannelConfig(BaseModel):
     """Built-in channel configs; extra keys allowed for plugin channels."""
 
@@ -175,6 +211,7 @@ class ChannelConfig(BaseModel):
     voice: VoiceChannelConfig = VoiceChannelConfig()
     wecom: WecomConfig = WecomConfig()
     xiaoyi: XiaoYiConfig = XiaoYiConfig()
+    weixin: WeixinConfig = WeixinConfig()
 
 
 class LastApiConfig(BaseModel):
@@ -207,16 +244,276 @@ class AgentsDefaultsConfig(BaseModel):
     heartbeat: Optional[HeartbeatConfig] = None
 
 
+class EmbeddingConfig(BaseModel):
+    """Embedding model configuration."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    backend: str = Field(
+        default="openai",
+        description="Embedding backend (openai, etc.)",
+    )
+    api_key: str = Field(
+        default="",
+        description="API key for embedding provider",
+    )
+    base_url: str = Field(default="", description="Base URL for embedding API")
+    model_name: str = Field(default="", description="Embedding model name")
+    dimensions: int = Field(default=1024, description="Embedding dimensions")
+    enable_cache: bool = Field(
+        default=True,
+        description="Whether to enable embedding cache",
+    )
+    use_dimensions: bool = Field(
+        default=False,
+        description="Whether to use custom dimensions",
+    )
+    max_cache_size: int = Field(default=3000, description="Maximum cache size")
+    max_input_length: int = Field(
+        default=8192,
+        description="Maximum input length for embedding",
+    )
+    max_batch_size: int = Field(
+        default=10,
+        description="Maximum batch size for embedding",
+    )
+
+
+class ContextCompactConfig(BaseModel):
+    """Context compaction and token-counting configuration."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    token_count_model: str = Field(
+        default="default",
+        description="Model to use for token counting",
+    )
+
+    token_count_use_mirror: bool = Field(
+        default=False,
+        description="Whether to use HuggingFace mirror for token counting",
+    )
+
+    token_count_estimate_divisor: float = Field(
+        default=4,
+        ge=2,
+        le=5,
+        description=(
+            "Divisor for byte-based token estimation (byte_len / divisor)"
+        ),
+    )
+
+    context_compact_enabled: bool = Field(
+        default=True,
+        description="Whether to enable automatic context compaction",
+    )
+
+    memory_compact_ratio: float = Field(
+        default=0.75,
+        ge=0.3,
+        le=0.9,
+        description=(
+            "Compaction trigger threshold ratio: compaction is triggered when "
+            "the context length reaches this fraction of max_input_length"
+        ),
+    )
+
+    memory_reserve_ratio: float = Field(
+        default=0.1,
+        ge=0.05,
+        le=0.3,
+        description=(
+            "Context reserve threshold ratio: the most recent fraction of the "
+            "context is preserved after compaction to maintain continuity"
+        ),
+    )
+
+    compact_with_thinking_block: bool = Field(
+        default=True,
+        description="Whether to include thinking blocks when compacting",
+    )
+
+
+class ToolResultCompactConfig(BaseModel):
+    """Tool result compaction thresholds and retention configuration."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: bool = Field(
+        default=True,
+        description="Whether to enable tool result compaction",
+    )
+
+    recent_n: int = Field(
+        default=2,
+        ge=1,
+        le=10,
+        description="Number of recent messages to use recent_max_bytes for",
+    )
+
+    old_max_bytes: int = Field(
+        default=3000,
+        ge=100,
+        description=(
+            "Byte threshold for old messages in tool result compaction"
+        ),
+    )
+
+    recent_max_bytes: int = Field(
+        default=50000,
+        ge=1000,
+        description=(
+            "Byte threshold for recent messages in tool result compaction"
+        ),
+    )
+
+    retention_days: int = Field(
+        default=5,
+        ge=1,
+        le=10,
+        description="Number of days to retain tool result files",
+    )
+
+
+class MemorySummaryConfig(BaseModel):
+    """Memory summarization and search configuration."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    memory_summary_enabled: bool = Field(
+        default=True,
+        description="Whether to enable memory summarization during compaction",
+    )
+
+    force_memory_search: bool = Field(
+        default=False,
+        description="Whether to force memory search on every turn",
+    )
+
+    force_max_results: int = Field(
+        default=1,
+        ge=1,
+        description=(
+            "Maximum number of results to return when force memory"
+            " search is enabled"
+        ),
+    )
+
+    force_min_score: float = Field(
+        default=0.3,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Minimum relevance score for results when force memory"
+            " search is enabled"
+        ),
+    )
+
+    rebuild_memory_index_on_start: bool = Field(
+        default=False,
+        description=(
+            "Whether to clear and rebuild the memory search index when the"
+            " agent starts. Set to False to skip re-indexing and only monitor"
+            " new file changes."
+        ),
+    )
+
+
 class AgentsRunningConfig(BaseModel):
     """Agent runtime behavior configuration."""
 
+    model_config = ConfigDict(extra="ignore")
+
     max_iters: int = Field(
-        default=50,
+        default=100,
         ge=1,
         description=(
             "Maximum number of reasoning-acting iterations for ReAct agent"
         ),
     )
+
+    llm_retry_enabled: bool = Field(
+        default=LLM_MAX_RETRIES > 0,
+        description="Whether to auto-retry transient LLM API errors",
+    )
+
+    llm_max_retries: int = Field(
+        default=max(LLM_MAX_RETRIES, 1),
+        ge=1,
+        description="Maximum retry attempts for transient LLM API errors",
+    )
+
+    llm_backoff_base: float = Field(
+        default=LLM_BACKOFF_BASE,
+        ge=0.1,
+        description="Base delay in seconds for exponential LLM retry backoff",
+    )
+
+    llm_backoff_cap: float = Field(
+        default=LLM_BACKOFF_CAP,
+        ge=0.5,
+        description=(
+            "Maximum delay cap in seconds for LLM retry backoff; "
+            "must be greater than or equal to the base delay"
+        ),
+    )
+
+    llm_max_concurrent: int = Field(
+        default=LLM_MAX_CONCURRENT,
+        ge=1,
+        description=(
+            "Maximum number of concurrent in-flight LLM calls. "
+            "Shared across all agents; only the first initialization wins."
+        ),
+    )
+
+    llm_max_qpm: int = Field(
+        default=LLM_MAX_QPM,
+        ge=0,
+        description=(
+            "Maximum queries per minute (60-second sliding window). "
+            "New requests that would exceed this limit wait before being "
+            "dispatched — proactively preventing 429s. 0 = disabled."
+        ),
+    )
+
+    llm_rate_limit_pause: float = Field(
+        default=LLM_RATE_LIMIT_PAUSE,
+        ge=1.0,
+        description=(
+            "Default pause duration (seconds) applied globally when a 429 "
+            "rate-limit response is received."
+        ),
+    )
+
+    llm_rate_limit_jitter: float = Field(
+        default=LLM_RATE_LIMIT_JITTER,
+        ge=0.0,
+        description=(
+            "Random jitter range (seconds) added on top of the pause so "
+            "concurrent waiters stagger their wake-up."
+        ),
+    )
+
+    llm_acquire_timeout: float = Field(
+        default=LLM_ACQUIRE_TIMEOUT,
+        ge=10.0,
+        description=(
+            "Maximum time (seconds) a caller waits to acquire a rate-limiter "
+            "slot before giving up with an error."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def validate_llm_retry_backoff(self) -> "AgentsRunningConfig":
+        """Validate LLM retry backoff relationships."""
+        if self.llm_backoff_cap < self.llm_backoff_base:
+            raise ValueError(
+                "llm_backoff_cap must be greater than or equal to "
+                "llm_backoff_base",
+            )
+        return self
+
     max_input_length: int = Field(
         default=128 * 1024,  # 128K = 131072 tokens
         ge=1000,
@@ -225,43 +522,53 @@ class AgentsRunningConfig(BaseModel):
         ),
     )
 
-    memory_compact_ratio: float = Field(
-        default=0.75,
-        ge=0.3,
-        le=0.9,
-        description="Ratio of memory to compact when memory is full",
+    history_max_length: int = Field(
+        default=10000,
+        ge=1000,
+        description="Maximum length for /history command output",
     )
 
-    memory_reserve_ratio: float = Field(
-        default=0.1,
-        ge=0.05,
-        le=0.3,
-        description="Ratio of memory to reserve when compact memory",
+    context_compact: ContextCompactConfig = Field(
+        default_factory=ContextCompactConfig,
+        description="Context compaction configuration",
     )
 
-    enable_tool_result_compact: bool = Field(
-        default=False,
-        description="Whether to compact tool result messages in memory",
+    tool_result_compact: ToolResultCompactConfig = Field(
+        default_factory=ToolResultCompactConfig,
+        description="Tool result compaction configuration",
     )
 
-    tool_result_compact_keep_n: int = Field(
-        default=5,
-        ge=1,
-        le=10,
+    memory_summary: MemorySummaryConfig = Field(
+        default_factory=MemorySummaryConfig,
+        description="Memory summarization and search configuration",
+    )
+
+    embedding_config: EmbeddingConfig = Field(
+        default_factory=EmbeddingConfig,
+        description="Embedding model configuration",
+    )
+
+    memory_manager_backend: Literal["remelight"] = Field(
+        default="remelight",
         description=(
-            "Number of tool result messages to keep in memory when compacting"
+            "Memory manager backend type. "
+            "Currently only 'remelight' is supported."
         ),
     )
 
     @property
     def memory_compact_reserve(self) -> int:
         """Memory compact reserve size (tokens)."""
-        return int(self.max_input_length * self.memory_reserve_ratio)
+        return int(
+            self.max_input_length * self.context_compact.memory_reserve_ratio,
+        )
 
     @property
     def memory_compact_threshold(self) -> int:
         """Memory compact threshold size (tokens)."""
-        return int(self.max_input_length * self.memory_compact_ratio)
+        return int(
+            self.max_input_length * self.context_compact.memory_compact_ratio,
+        )
 
 
 class AgentsLLMRoutingConfig(BaseModel):
@@ -296,10 +603,16 @@ class AgentProfileRef(BaseModel):
     Full agent configuration is stored in workspace/agent.json.
     """
 
+    model_config = ConfigDict(extra="ignore")
+
     id: str = Field(..., description="Unique agent ID")
     workspace_dir: str = Field(
         ...,
         description="Path to agent's workspace directory",
+    )
+    enabled: bool = Field(
+        default=True,
+        description="Whether agent is enabled (controls instance loading)",
     )
 
 
@@ -329,6 +642,10 @@ class AgentProfileConfig(BaseModel):
     heartbeat: Optional[HeartbeatConfig] = Field(
         default=None,
         description="Heartbeat configuration for this agent",
+    )
+    last_dispatch: Optional["LastDispatchConfig"] = Field(
+        default=None,
+        description="Last dispatch target for this agent",
     )
     running: AgentsRunningConfig = Field(
         default_factory=AgentsRunningConfig,
@@ -367,11 +684,15 @@ class AgentsConfig(BaseModel):
         default="default",
         description="Currently active agent ID",
     )
+    agent_order: List[str] = Field(
+        default_factory=lambda: ["default"],
+        description="Persisted UI order for configured agents",
+    )
     profiles: Dict[str, AgentProfileRef] = Field(
         default_factory=lambda: {
             "default": AgentProfileRef(
                 id="default",
-                workspace_dir="~/.copaw/workspaces/default",
+                workspace_dir=f"{WORKING_DIR}/workspaces/default",
             ),
         },
         description="Agent profile references (ID and workspace path only)",
@@ -390,6 +711,45 @@ class AgentsConfig(BaseModel):
     installed_md_files_language: Optional[str] = None
     system_prompt_files: List[str] = Field(
         default_factory=lambda: ["AGENTS.md", "SOUL.md", "PROFILE.md"],
+    )
+    audio_mode: Literal["auto", "native"] = Field(
+        default="auto",
+        description=(
+            "How to handle incoming audio/voice messages. "
+            '"auto": transcribe if a provider is available, otherwise show '
+            "file-uploaded placeholder; "
+            '"native": send audio blocks directly to the model '
+            "(may need ffmpeg)."
+        ),
+    )
+
+    transcription_provider_type: Literal[
+        "disabled",
+        "whisper_api",
+        "local_whisper",
+    ] = Field(
+        default="disabled",
+        description=(
+            "Transcription backend. "
+            '"disabled": no transcription; '
+            '"whisper_api": remote OpenAI-compatible endpoint; '
+            '"local_whisper": locally installed openai-whisper.'
+        ),
+    )
+    transcription_provider_id: str = Field(
+        default="",
+        description=(
+            "Provider ID for Whisper API transcription. "
+            "Empty = no provider selected. "
+            'Only used when transcription_provider_type is "whisper_api".'
+        ),
+    )
+    transcription_model: str = Field(
+        default="whisper-1",
+        description=(
+            "Model name for Whisper API transcription. "
+            'e.g. "whisper-1", "whisper-large-v3".'
+        ),
     )
 
 
@@ -504,6 +864,10 @@ class BuiltinToolConfig(BaseModel):
         True,
         description="Whether tool output is rendered to user channels",
     )
+    async_execution: bool = Field(
+        False,
+        description="Whether to execute the tool asynchronously in background",
+    )
 
 
 def _default_builtin_tools() -> Dict[str, BuiltinToolConfig]:
@@ -529,6 +893,16 @@ def _default_builtin_tools() -> Dict[str, BuiltinToolConfig]:
             enabled=True,
             description="Edit file using find-and-replace",
         ),
+        "grep_search": BuiltinToolConfig(
+            name="grep_search",
+            enabled=True,
+            description="Search file contents by pattern",
+        ),
+        "glob_search": BuiltinToolConfig(
+            name="glob_search",
+            enabled=True,
+            description="Find files matching a glob pattern",
+        ),
         "browser_use": BuiltinToolConfig(
             name="browser_use",
             enabled=True,
@@ -542,8 +916,13 @@ def _default_builtin_tools() -> Dict[str, BuiltinToolConfig]:
         "view_image": BuiltinToolConfig(
             name="view_image",
             enabled=True,
-            description="Load an image into LLM context "
-            "for visual analysis",
+            description="Load an image into LLM context for visual analysis",
+            display_to_user=False,
+        ),
+        "view_video": BuiltinToolConfig(
+            name="view_video",
+            enabled=True,
+            description="Load a video into LLM context for visual analysis",
             display_to_user=False,
         ),
         "send_file_to_user": BuiltinToolConfig(
@@ -585,6 +964,28 @@ class ToolsConfig(BaseModel):
         return self
 
 
+def build_qa_agent_tools_config() -> ToolsConfig:
+    """Tools preset for builtin ``default_qa_agent`` (first workspace init).
+
+    Only these are enabled: execute_shell_command, read_file, edit_file,
+    write_file, view_image. All other built-ins are disabled.
+    """
+    allow = frozenset(
+        {
+            "execute_shell_command",
+            "read_file",
+            "write_file",
+            "edit_file",
+            "view_image",
+        },
+    )
+    builtin_tools = {
+        name: tc.model_copy(update={"enabled": name in allow})
+        for name, tc in _default_builtin_tools().items()
+    }
+    return ToolsConfig(builtin_tools=builtin_tools)
+
+
 class ToolGuardRuleConfig(BaseModel):
     """A single user-defined guard rule (stored in config.json)."""
 
@@ -611,6 +1012,13 @@ class ToolGuardConfig(BaseModel):
     denied_tools: List[str] = Field(default_factory=list)
     custom_rules: List[ToolGuardRuleConfig] = Field(default_factory=list)
     disabled_rules: List[str] = Field(default_factory=list)
+
+
+class FileGuardConfig(BaseModel):
+    """File guard settings under ``security.file_guard``."""
+
+    enabled: bool = True
+    sensitive_files: List[str] = Field(default_factory=list)
 
 
 class SkillScannerWhitelistEntry(BaseModel):
@@ -657,6 +1065,7 @@ class SecurityConfig(BaseModel):
     """Top-level ``security`` section in config.json."""
 
     tool_guard: ToolGuardConfig = Field(default_factory=ToolGuardConfig)
+    file_guard: FileGuardConfig = Field(default_factory=FileGuardConfig)
     skill_scanner: SkillScannerConfig = Field(
         default_factory=SkillScannerConfig,
     )
@@ -694,6 +1103,7 @@ ChannelConfigUnion = Union[
     VoiceChannelConfig,
     WecomConfig,
     XiaoYiConfig,
+    WeixinConfig,
 ]
 
 
@@ -774,6 +1184,16 @@ def load_agent_config(agent_id: str) -> AgentProfileConfig:
     with open(agent_config_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
+    # Normalize legacy ~/.copaw-bound paths to current WORKING_DIR.
+    # This keeps COPAW_WORKING_DIR effective even if existing agent.json
+    # contains older hard-coded paths like "~/.copaw/media".
+    try:
+        from .utils import _normalize_working_dir_bound_paths
+
+        data = _normalize_working_dir_bound_paths(data)
+    except Exception:
+        pass
+
     return AgentProfileConfig(**data)
 
 
@@ -840,7 +1260,7 @@ def migrate_legacy_config_to_multi_agent() -> bool:
     legacy_agents = config.agents
 
     # Create default agent workspace
-    default_workspace = Path("~/.copaw/workspaces/default").expanduser()
+    default_workspace = Path(f"{WORKING_DIR}/workspaces/default").expanduser()
     default_workspace.mkdir(parents=True, exist_ok=True)
 
     # Create default agent configuration from legacy settings
@@ -885,8 +1305,10 @@ def migrate_legacy_config_to_multi_agent() -> bool:
             indent=2,
         )
 
-    # Migrate existing workspace files to default agent workspace
-    old_workspace = Path("~/.copaw").expanduser()
+    # Migrate existing workspace files from legacy default working dir.
+    # When COPAW_WORKING_DIR is customized, historical data may still exist
+    # under "~/.copaw".
+    old_workspace = Path("~/.copaw").expanduser().resolve()
 
     # Move sessions, memory, and other workspace files
     for item_name in ["sessions", "memory", "jobs.json"]:

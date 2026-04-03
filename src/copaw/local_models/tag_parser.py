@@ -38,6 +38,35 @@ _TOOL_CALL_RE = re.compile(
     re.DOTALL,
 )
 
+# Regex for XML-style tool call format:
+#   <function=func_name>
+#     <parameter=param_name>value</parameter>
+#     ...
+#   </function>
+_XML_FUNC_RE = re.compile(
+    r"<function=([^>]+)>(.*?)</function>",
+    re.DOTALL,
+)
+_XML_PARAM_RE = re.compile(
+    r"<parameter=([^>]+)>(.*?)</parameter>",
+    re.DOTALL,
+)
+
+# Regex for lenient XML-style tool call format (no closing tags):
+#   <function=func_name>
+#     <parameter=param_name>value
+#     <parameter=param_name2>value2
+_XML_FUNC_LENIENT_RE = re.compile(
+    r"<function=([^>]+)>(.*?)(?=<function=|</function>|\Z)",
+    re.DOTALL,
+)
+# Each parameter value runs from after the tag to the next tag or end.
+_XML_PARAM_LENIENT_RE = re.compile(
+    r"<parameter=([^>]+)>(.*?)"
+    r"(?=<parameter=|</parameter>|<function=|</function>|\Z)",
+    re.DOTALL,
+)
+
 # ---------------------------------------------------------------------------
 # Data classes
 # ---------------------------------------------------------------------------
@@ -92,38 +121,146 @@ def _generate_call_id() -> str:
     return f"call_{uuid.uuid4().hex[:12]}"
 
 
-def _parse_single_tool_call(raw_text: str) -> ParsedToolCall | None:
-    """
-    Parse the JSON content between a ``<tool_call>`` / ``</tool_call>`` pair.
+def _extract_params_lenient(body: str) -> dict:
+    """Extract parameters from *body* using lenient regex (no closing tags)."""
+    arguments: dict = {}
+    for param_match in _XML_PARAM_LENIENT_RE.finditer(body):
+        param_name = param_match.group(1).strip()
+        param_value = param_match.group(2).strip()
+        if param_name:
+            arguments[param_name] = param_value
+    return arguments
 
-    Expected format::
 
-        {"name": "func_name", "arguments": {"key": "value"}}
+# pylint: disable=too-many-return-statements
+def _parse_xml_tool_call(raw_text: str) -> ParsedToolCall | None:
+    """Parse an XML-style tool call block.
+
+    Tries the strict format first (all closing tags present)::
+
+        <function=func_name>
+          <parameter=param1>value1</parameter>
+          <parameter=param2>value2</parameter>
+        </function>
+
+    Falls back to a lenient format when closing tags are absent::
+
+        <function=func_name>
+          <parameter=param1>value1
+          <parameter=param2>value2
     """
-    try:
-        data = json.loads(raw_text.strip())
-    except (json.JSONDecodeError, TypeError):
-        logger.warning("Failed to parse tool call JSON: %s", raw_text[:200])
+    func_match = _XML_FUNC_RE.search(raw_text)
+    if func_match:
+        name = func_match.group(1).strip()
+        if not name:
+            return None
+        body = func_match.group(2)
+        arguments: dict = {}
+        for param_match in _XML_PARAM_RE.finditer(body):
+            arguments[param_match.group(1).strip()] = param_match.group(
+                2,
+            ).strip()
+        lenient_args = _extract_params_lenient(body)
+        if len(lenient_args) > len(arguments):
+            arguments = lenient_args
+        if not arguments and "<parameter=" in body:
+            # Body contains <parameter= tags but neither strict nor lenient
+            # parsing could extract them — treat as a parse failure.
+            return None
+        return ParsedToolCall(
+            id=_generate_call_id(),
+            name=name,
+            arguments=arguments,
+            raw_arguments=json.dumps(arguments, ensure_ascii=False),
+        )
+
+    # Strict format failed — try lenient format (no closing tags).
+    func_match_lenient = _XML_FUNC_LENIENT_RE.search(raw_text)
+    if not func_match_lenient:
         return None
 
-    name = data.get("name", "")
+    name = func_match_lenient.group(1).strip()
     if not name:
-        logger.warning("Tool call missing 'name' field: %s", raw_text[:200])
         return None
 
-    arguments = data.get("arguments", {})
-    if isinstance(arguments, str):
-        try:
-            arguments = json.loads(arguments)
-        except (json.JSONDecodeError, TypeError):
-            arguments = {}
+    body = func_match_lenient.group(2)
+    arguments = _extract_params_lenient(body)
 
+    if not arguments:
+        logger.debug(
+            "Lenient XML parse found function '%s' but no parameters; "
+            "discarding.",
+            name,
+        )
+        return None
+
+    logger.debug(
+        "Parsed tool call via lenient XML format: name=%s, params=%s",
+        name,
+        list(arguments.keys()),
+    )
     return ParsedToolCall(
         id=_generate_call_id(),
         name=name,
         arguments=arguments,
         raw_arguments=json.dumps(arguments, ensure_ascii=False),
     )
+
+
+def _parse_single_tool_call(raw_text: str) -> ParsedToolCall | None:
+    """Parse the content between a ``<tool_call>`` / ``</tool_call>`` pair.
+
+    Tries JSON format first::
+
+        {"name": "func_name", "arguments": {"key": "value"}}
+
+    Falls back to strict XML format if JSON parsing fails::
+
+        <function=func_name>
+          <parameter=param1>value1</parameter>
+        </function>
+
+    Falls back further to lenient XML format (no closing tags) if needed::
+
+        <function=func_name>
+          <parameter=param1>value1
+          <parameter=param2>value2
+    """
+    stripped = raw_text.strip()
+
+    try:
+        data = json.loads(stripped)
+    except (json.JSONDecodeError, TypeError):
+        data = None
+
+    if data is not None:
+        name = data.get("name", "")
+        if not name:
+            logger.warning(
+                "Tool call missing 'name' field: %s",
+                stripped[:200],
+            )
+            return None
+
+        arguments = data.get("arguments", {})
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments)
+            except (json.JSONDecodeError, TypeError):
+                arguments = {}
+
+        return ParsedToolCall(
+            id=_generate_call_id(),
+            name=name,
+            arguments=arguments,
+            raw_arguments=json.dumps(arguments, ensure_ascii=False),
+        )
+
+    # JSON failed — try XML format.
+    result = _parse_xml_tool_call(stripped)
+    if result is None:
+        logger.warning("Failed to parse tool call: %s", stripped[:200])
+    return result
 
 
 # ---------------------------------------------------------------------------

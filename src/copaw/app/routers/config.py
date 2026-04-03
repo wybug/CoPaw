@@ -1,11 +1,14 @@
 # -*- coding: utf-8 -*-
 
 from datetime import datetime, timezone
-from typing import Any, List
+from typing import Any, List, Optional
+
+import segno
 
 from fastapi import APIRouter, Body, HTTPException, Path, Request
 from pydantic import BaseModel
 
+from ..utils import schedule_agent_reload
 from ...config import (
     load_config,
     save_config,
@@ -32,6 +35,7 @@ from ...config.config import (
     SkillScannerWhitelistEntry,
     TelegramConfig,
     VoiceChannelConfig,
+    WecomConfig,
 )
 
 from .schemas_config import HeartbeatBody
@@ -51,6 +55,7 @@ _CHANNEL_CONFIG_CLASS_MAP = {
     "mattermost": MattermostConfig,
     "mqtt": MQTTConfig,
     "matrix": MatrixConfig,
+    "wecom": WecomConfig,
 }
 
 
@@ -128,21 +133,116 @@ async def put_channels(
     save_agent_config(agent.agent_id, agent.config)
 
     # Hot reload config (async, non-blocking)
-    import asyncio
-
-    async def reload_in_background():
-        try:
-            await agent.reload()
-        except Exception as e:
-            import logging
-
-            logging.getLogger(__name__).warning(
-                f"Background reload failed: {e}",
-            )
-
-    asyncio.create_task(reload_in_background())
+    schedule_agent_reload(request, agent.agent_id)
 
     return channels_config
+
+
+async def _get_weixin_base_url(request: Request) -> str:
+    """Return configured WeChat base_url for the current agent."""
+    from ..channels.weixin.client import _DEFAULT_BASE_URL
+
+    try:
+        from ..agent_context import get_agent_for_request
+
+        agent = await get_agent_for_request(request)
+        channels = agent.config.channels
+        if channels is not None:
+            weixin_cfg = getattr(channels, "weixin", None)
+            if weixin_cfg is not None:
+                return getattr(weixin_cfg, "base_url", "") or _DEFAULT_BASE_URL
+    except Exception:
+        pass
+    return _DEFAULT_BASE_URL
+
+
+@router.get(
+    "/channels/weixin/qrcode",
+    summary="Get WeChat iLink login QR code",
+    description="Fetch QR code image (base64 PNG) for WeChat iLink Bot login.",
+)
+async def get_weixin_qrcode(request: Request) -> dict:
+    """Return a QR code image (base64 PNG) for WeChat iLink Bot login."""
+    import base64
+    import io
+    import httpx
+    from ..channels.weixin.client import ILinkClient
+
+    base_url = await _get_weixin_base_url(request)
+    client = ILinkClient(base_url=base_url)
+    await client.start()
+    try:
+        qr_data = await client.get_bot_qrcode()
+    except (httpx.HTTPError, Exception) as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"WeChat QR code fetch failed: {exc}",
+        ) from exc
+    finally:
+        await client.stop()
+
+    qrcode = qr_data.get("qrcode", "")
+    qrcode_img_url = qr_data.get("qrcode_img_content", "")
+
+    if not qrcode and not qrcode_img_url:
+        raise HTTPException(
+            status_code=502,
+            detail="WeChat returned empty QR code data",
+        )
+
+    # Generate QR code image from the scan URL using segno (pure Python)
+    # The scan target is the URL that WeChat app should open when scanning
+    if qrcode_img_url.startswith("http"):
+        scan_url = qrcode_img_url
+    else:
+        scan_url = (
+            f"https://liteapp.weixin.qq.com/q/7GiQu1"
+            f"?qrcode={qrcode}&bot_type=3"
+        )
+    try:
+        qr = segno.make(scan_url, error="M")
+        buf = io.BytesIO()
+        qr.save(buf, kind="png", scale=6, border=2)
+        qrcode_img_b64 = base64.b64encode(buf.getvalue()).decode()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"QR code image generation failed: {exc}",
+        ) from exc
+
+    return {"qrcode_img": qrcode_img_b64, "qrcode": qrcode}
+
+
+@router.get(
+    "/channels/weixin/qrcode/status",
+    summary="Poll WeChat iLink QR code scan status",
+)
+async def get_weixin_qrcode_status(
+    request: Request,
+    qrcode: str,
+) -> dict:
+    """Poll QR code scan status. Returns {status, bot_token, base_url}."""
+    import httpx
+    from ..channels.weixin.client import ILinkClient
+
+    base_url = await _get_weixin_base_url(request)
+    client = ILinkClient(base_url=base_url)
+    await client.start()
+    try:
+        data = await client.get_qrcode_status(qrcode)
+    except (httpx.HTTPError, Exception) as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"WeChat status check failed: {exc}",
+        ) from exc
+    finally:
+        await client.stop()
+
+    return {
+        "status": data.get("status", "waiting"),
+        "bot_token": data.get("bot_token", ""),
+        "base_url": data.get("baseurl", ""),
+    }
 
 
 @router.get(
@@ -236,19 +336,7 @@ async def put_channel(
     save_agent_config(agent.agent_id, agent.config)
 
     # Hot reload config (async, non-blocking)
-    import asyncio
-
-    async def reload_in_background():
-        try:
-            await agent.reload()
-        except Exception as e:
-            import logging
-
-            logging.getLogger(__name__).warning(
-                f"Background reload failed: {e}",
-            )
-
-    asyncio.create_task(reload_in_background())
+    schedule_agent_reload(request, agent.agent_id)
 
     return channel_config
 
@@ -426,6 +514,66 @@ async def get_builtin_rules() -> List[ToolGuardRuleConfig]:
         )
         for r in rules
     ]
+
+
+# ── Security / File Guard ────────────────────────────────────────────
+
+
+class FileGuardResponse(BaseModel):
+    enabled: bool = True
+    paths: List[str] = []
+
+
+class FileGuardUpdateBody(BaseModel):
+    enabled: Optional[bool] = None
+    paths: Optional[List[str]] = None
+
+
+@router.get(
+    "/security/file-guard",
+    response_model=FileGuardResponse,
+    summary="Get file guard settings",
+)
+async def get_file_guard() -> FileGuardResponse:
+    config = load_config()
+    fg = config.security.file_guard
+    paths = fg.sensitive_files
+    if not paths:
+        from ...security.tool_guard.guardians.file_guardian import (
+            _DEFAULT_DENY_DIRS,
+        )
+
+        paths = list(_DEFAULT_DENY_DIRS)
+    return FileGuardResponse(enabled=fg.enabled, paths=paths)
+
+
+@router.put(
+    "/security/file-guard",
+    response_model=FileGuardResponse,
+    summary="Update file guard settings",
+)
+async def put_file_guard(
+    body: FileGuardUpdateBody,
+) -> FileGuardResponse:
+    config = load_config()
+    fg = config.security.file_guard
+
+    if body.enabled is not None:
+        fg.enabled = body.enabled
+    if body.paths is not None:
+        fg.sensitive_files = body.paths
+
+    save_config(config)
+
+    from ...security.tool_guard.engine import get_guard_engine
+
+    engine = get_guard_engine()
+    engine.reload_rules()
+
+    return FileGuardResponse(
+        enabled=fg.enabled,
+        paths=fg.sensitive_files,
+    )
 
 
 # ── Security / Skill Scanner ────────────────────────────────────────

@@ -10,14 +10,14 @@ Example:
 """
 
 
+import base64
 import logging
-from typing import Any, Optional, Sequence, Tuple, Type
-from functools import wraps
+import os
+from typing import List, Sequence, Tuple, Type, Any, Union, Optional
+from urllib.parse import urlparse
 
 from agentscope.formatter import FormatterBase, OpenAIChatFormatter
 from agentscope.model import ChatModelBase, OpenAIChatModel
-from agentscope.message import Msg
-import agentscope
 
 try:
     from agentscope.formatter import AnthropicChatFormatter
@@ -35,7 +35,11 @@ except ImportError:  # pragma: no cover - compatibility fallback
 
 from .utils.tool_message_utils import _sanitize_tool_messages
 from ..providers import ProviderManager
-from ..providers.retry_chat_model import RetryChatModel
+from ..providers.retry_chat_model import (
+    RetryChatModel,
+    RetryConfig,
+    RateLimitConfig,
+)
 from ..token_usage import TokenRecordingModelWrapper
 
 
@@ -50,37 +54,263 @@ def _file_url_to_path(url: str) -> str:
     return s
 
 
-def _monkey_patch(func):
-    """A monkey patch wrapper for agentscope <= 1.0.16dev"""
-
-    @wraps(func)
-    async def wrapper(
-        self,
-        msgs: list[Msg],
-        **kwargs: Any,
-    ) -> list[dict[str, Any]]:
-        for msg in msgs:
-            if isinstance(msg.content, str):
-                continue
-            if isinstance(msg.content, list):
-                for block in msg.content:
-                    if (
-                        block["type"] in ["audio", "image", "video"]
-                        and block.get("source", {}).get("type") == "url"
-                    ):
-                        url = block["source"]["url"]
-                        if url.startswith("file://"):
-                            block["source"]["url"] = _file_url_to_path(url)
-        return await func(self, msgs, **kwargs)
-
-    return wrapper
-
-
-if agentscope.__version__ in ["1.0.16dev", "1.0.16"]:
-    OpenAIChatFormatter.format = _monkey_patch(OpenAIChatFormatter.format)
-
-
 logger = logging.getLogger(__name__)
+
+_SUPPORTED_IMAGE_EXTENSIONS: dict[str, str] = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+}
+
+_SUPPORTED_VIDEO_EXTENSIONS: dict[str, str] = {
+    ".mp4": "video/mp4",
+    ".webm": "video/webm",
+    ".mpeg": "video/mpeg",
+    ".mov": "video/quicktime",
+    ".avi": "video/x-msvideo",
+    ".mkv": "video/x-matroska",
+}
+
+
+# TODO: remove after agentscope anthropic formatter updated
+def _format_anthropic_media_block(block: dict) -> dict:
+    """Format an image or video block for Anthropic API.
+
+    If the source is a URLSource pointing to a local file it will be
+    converted to base64.  Web URLs are passed through as-is.
+
+    Args:
+        block (`dict`):
+            A block dict with ``type`` of ``"image"`` or ``"video"``.
+
+    Returns:
+        `dict`: Formatted block for the Anthropic API.
+
+    Raises:
+        `ValueError`:
+            If the source type or media format is not supported.
+    """
+    typ = block["type"]
+    extensions = (
+        _SUPPORTED_IMAGE_EXTENSIONS
+        if typ == "image"
+        else _SUPPORTED_VIDEO_EXTENSIONS
+    )
+
+    source = block["source"]
+
+    if source["type"] == "base64":
+        return {**block}
+
+    url = source["url"]
+    raw_url = _file_url_to_path(url)
+
+    if os.path.exists(raw_url) and os.path.isfile(raw_url):
+        ext = os.path.splitext(raw_url)[1].lower()
+        media_type = extensions.get(ext)
+        if media_type:
+            with open(raw_url, "rb") as f:
+                data = base64.b64encode(f.read()).decode(
+                    "utf-8",
+                )
+            return {
+                "type": typ,
+                "source": {
+                    "type": "base64",
+                    "media_type": media_type,
+                    "data": data,
+                },
+            }
+
+    parsed_url = urlparse(raw_url)
+    if parsed_url.scheme not in ("", "file"):
+        return {
+            "type": typ,
+            "source": {
+                "type": "url",
+                "url": url,
+            },
+        }
+
+    raise ValueError(
+        f'Invalid {typ} URL: "{url}". '
+        "It should be a local file or a web URL.",
+    )
+
+
+def _format_openai_video_block(video_block: dict) -> dict:
+    """Format a video block for OpenAI-compatible API.
+
+    Local files are converted to base64 data URLs; web URLs are
+    passed through directly.
+
+    Args:
+        video_block (`dict`):
+            The video block to format.
+
+    Returns:
+        `dict`:
+            ``{"type": "video_url", "video_url": {"url": ...}}``.
+
+    Raises:
+        `ValueError`:
+            If the source type or video format is not supported.
+    """
+    source = video_block["source"]
+    if source["type"] == "base64":
+        media_type = source["media_type"]
+        url = f"data:{media_type};base64,{source['data']}"
+    elif source["type"] == "url":
+        raw_url = source["url"].removeprefix("file://")
+        if os.path.exists(raw_url) and os.path.isfile(raw_url):
+            ext = os.path.splitext(raw_url)[1].lower()
+            media_type = _SUPPORTED_VIDEO_EXTENSIONS.get(ext)
+            if not media_type:
+                raise ValueError(
+                    f"Unsupported video extension: {ext}",
+                )
+            with open(raw_url, "rb") as f:
+                data = base64.b64encode(
+                    f.read(),
+                ).decode("utf-8")
+            url = f"data:{media_type};base64,{data}"
+        else:
+            parsed = urlparse(raw_url)
+            if parsed.scheme not in ("", "file"):
+                url = source["url"]
+            else:
+                raise ValueError(
+                    f"Invalid video URL: "
+                    f'"{source["url"]}". '
+                    "It should be a local file "
+                    "or a web URL.",
+                )
+    else:
+        raise ValueError(
+            "Unsupported video source type: " f"{source['type']}",
+        )
+
+    return {
+        "type": "video_url",
+        "video_url": {"url": url},
+    }
+
+
+def _replace_video_placeholders(
+    messages: list[dict],
+    video_subs: dict[str, dict],
+) -> None:
+    """Replace video placeholder text blocks with formatted
+    video blocks in OpenAI-formatted messages."""
+    for fmt_msg in messages:
+        content = fmt_msg.get("content")
+        if not isinstance(content, list):
+            continue
+        new_content = []
+        for item in content:
+            if (
+                isinstance(item, dict)
+                and item.get("type") == "text"
+                and item.get("text") in video_subs
+            ):
+                new_content.append(
+                    _format_openai_video_block(
+                        video_subs[item["text"]],
+                    ),
+                )
+            else:
+                new_content.append(item)
+        fmt_msg["content"] = new_content
+
+
+def _format_anthropic_output_items(output: list) -> list:
+    """Format a list of tool_result output blocks for Anthropic API,
+    converting image and video blocks as needed."""
+    return [
+        _format_anthropic_media_block(item)
+        if item.get("type") in ("image", "video")
+        else item
+        for item in output
+    ]
+
+
+# TODO: remove after agentscope anthropic formatter updated
+def _format_anthropic_messages(  # pylint: disable=too-many-branches
+    msgs: list,
+) -> list[dict]:
+    """Format messages for Anthropic API with image/video block support.
+
+    This replaces the default ``AnthropicChatFormatter._format`` so that
+    ``_format_anthropic_media_block`` is applied to both top-level media
+    blocks and media blocks nested inside ``tool_result`` outputs.
+    """
+    messages: list[dict] = []
+    for index, msg in enumerate(msgs):
+        content_blocks: list[dict] = []
+
+        for block in msg.get_content_blocks():
+            typ = block.get("type")
+            if typ in ["thinking", "text"]:
+                content_blocks.append({**block})
+
+            elif typ in ("image", "video"):
+                content_blocks.append(
+                    _format_anthropic_media_block(block),
+                )
+
+            elif typ == "tool_use":
+                content_blocks.append(
+                    {
+                        "id": block.get("id"),
+                        "type": "tool_use",
+                        "name": block.get("name"),
+                        "input": block.get("input", {}),
+                    },
+                )
+
+            elif typ == "tool_result":
+                output = block.get("output")
+                if output is None:
+                    content_value: list = [
+                        {"type": "text", "text": None},
+                    ]
+                elif isinstance(output, list):
+                    content_value = _format_anthropic_output_items(output)
+                else:
+                    content_value = [
+                        {"type": "text", "text": str(output)},
+                    ]
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": block.get("id"),
+                                "content": content_value,
+                            },
+                        ],
+                    },
+                )
+
+        if msg.role == "system" and index != 0:
+            role = "user"
+        else:
+            role = msg.role
+
+        msg_anthropic: dict = {
+            "role": role,
+            "content": content_blocks or None,
+        }
+
+        if msg_anthropic["content"] or msg_anthropic.get(
+            "tool_calls",
+        ):
+            messages.append(msg_anthropic)
+
+    return messages
 
 
 # Mapping from chat model class to formatter class
@@ -110,6 +340,115 @@ def _get_formatter_for_chat_model(
     )
 
 
+def _substitute_video_blocks(
+    msgs: list,
+) -> dict[str, dict]:
+    """Replace video blocks in msgs with text placeholders.
+
+    Returns a mapping from placeholder text to the original video
+    block so they can be restored later.
+    """
+    video_subs: dict[str, dict] = {}
+    for msg in msgs:
+        if not isinstance(msg.content, list):
+            continue
+        for i, blk in enumerate(msg.content):
+            if isinstance(blk, dict) and blk.get("type") == "video":
+                ph = f"__COPAW_VID_{id(blk)}__"
+                video_subs[ph] = blk
+                msg.content[i] = {
+                    "type": "text",
+                    "text": ph,
+                }
+    return video_subs
+
+
+def _restore_video_blocks(
+    msgs: list,
+    video_subs: dict[str, dict],
+) -> None:
+    """Restore original video blocks in msgs after formatting."""
+    for msg in msgs:
+        if not isinstance(msg.content, list):
+            continue
+        for i, blk in enumerate(msg.content):
+            if (
+                isinstance(blk, dict)
+                and blk.get("type") == "text"
+                and blk.get("text") in video_subs
+            ):
+                msg.content[i] = video_subs[blk["text"]]
+
+
+def _promote_tool_result_videos(
+    msgs: list,
+    messages: list[dict],
+) -> list[dict]:
+    """Inject promoted video user messages after tool result messages.
+
+    Mirrors the image promotion that agentscope's formatter does
+    for ``promote_tool_result_images``, but for video blocks.
+    """
+    promotions: dict[str, tuple[str, list]] = {}
+    for msg in msgs:
+        for block in msg.get_content_blocks():
+            if block.get("type") != "tool_result":
+                continue
+            output = block.get("output")
+            if not isinstance(output, list):
+                continue
+            videos = [
+                (
+                    item.get("source", {}).get("url", ""),
+                    item,
+                )
+                for item in output
+                if isinstance(item, dict) and item.get("type") == "video"
+            ]
+            if videos:
+                promotions[block.get("id")] = (
+                    block.get("name", ""),
+                    videos,
+                )
+
+    if not promotions:
+        return messages
+
+    new_messages: list[dict] = []
+    for fmt_msg in messages:
+        new_messages.append(fmt_msg)
+        tcid = fmt_msg.get("tool_call_id")
+        if tcid not in promotions:
+            continue
+        tool_name, videos = promotions[tcid]
+        promoted: list[dict] = [
+            {
+                "type": "text",
+                "text": "<system-info>The following are "
+                "the video contents from the tool "
+                f"result of '{tool_name}':",
+            },
+        ]
+        for url, vid_block in videos:
+            promoted.append(
+                {
+                    "type": "text",
+                    "text": f"\n- The video from '{url}': ",
+                },
+            )
+            promoted.append(
+                _format_openai_video_block(vid_block),
+            )
+        promoted.append(
+            {"type": "text", "text": "</system-info>"},
+        )
+        new_messages.append(
+            {"role": "user", "content": promoted},
+        )
+    return new_messages
+
+
+# pylint: disable-next=too-many-statements
 def _create_file_block_support_formatter(
     base_formatter_class: Type[FormatterBase],
 ) -> Type[FormatterBase]:
@@ -159,7 +498,62 @@ def _create_file_block_support_formatter(
                     ):
                         extra_contents[block["id"]] = block["extra_content"]
 
-            messages = await super()._format(msgs)
+            # Convert file:// URLs to paths for all media blocks,
+            # TODO: remove this after AgentScope updated
+            for msg in msgs:
+                for block in msg.get_content_blocks():
+                    if block.get("type") in ("image", "audio", "video"):
+                        source = block.get("source")
+                        if (
+                            isinstance(source, dict)
+                            and source.get("type") == "url"
+                            and isinstance(source.get("url"), str)
+                            and source["url"].startswith("file://")
+                        ):
+                            source["url"] = _file_url_to_path(source["url"])
+
+            # For Anthropic, fully override formatting to handle
+            # media blocks (top-level & inside tool_result output).
+            # TODO: remove after agentscope anthropic formatter updated
+            if AnthropicChatFormatter is not None and issubclass(
+                base_formatter_class,
+                AnthropicChatFormatter,
+            ):
+                messages = _format_anthropic_messages(msgs)
+            else:
+                # Gemini handles video natively; for others
+                # (OpenAI) we inject it via placeholders.
+                _needs_video = not (
+                    GeminiChatFormatter is not None
+                    and issubclass(
+                        base_formatter_class,
+                        GeminiChatFormatter,
+                    )
+                )
+                video_subs: dict[str, dict] = {}
+                if _needs_video:
+                    video_subs = _substitute_video_blocks(
+                        msgs,
+                    )
+
+                messages = await super()._format(msgs)
+
+                if video_subs:
+                    _replace_video_placeholders(
+                        messages,
+                        video_subs,
+                    )
+                    _restore_video_blocks(msgs, video_subs)
+
+                if _needs_video and getattr(
+                    self,
+                    "promote_tool_result_images",
+                    False,
+                ):
+                    messages = _promote_tool_result_videos(
+                        msgs,
+                        messages,
+                    )
 
             if extra_contents:
                 for message in messages:
@@ -169,32 +563,44 @@ def _create_file_block_support_formatter(
                             tc["extra_content"] = ec
 
             if reasoning_contents:
-                in_assistant = [m for m in msgs if m.role == "assistant"]
+                # Build a list of reasoning values aligned with surviving
+                # assistant messages.  The parent formatter drops
+                # thinking-only messages (no content/tool_calls), so we
+                # predict survivors and collect reasoning only for those.
+                aligned_reasoning = []
+                for m in (msg for msg in msgs if msg.role == "assistant"):
+                    is_thinking_only = (
+                        isinstance(m.content, list)
+                        and m.content
+                        and all(b.get("type") == "thinking" for b in m.content)
+                    )
+                    if not is_thinking_only:
+                        aligned_reasoning.append(
+                            reasoning_contents.get(id(m)),
+                        )
+
                 out_assistant = [
                     m for m in messages if m.get("role") == "assistant"
                 ]
-                if len(in_assistant) != len(out_assistant):
+
+                if len(aligned_reasoning) != len(out_assistant):
                     logger.warning(
                         "Assistant message count mismatch after formatting "
-                        "(%d before, %d after). "
+                        "(%d expected survivors, %d actual). "
                         "Skipping reasoning_content injection.",
-                        len(in_assistant),
+                        len(aligned_reasoning),
                         len(out_assistant),
                     )
                 else:
-                    for in_msg, out_msg in zip(
-                        in_assistant,
-                        out_assistant,
-                    ):
-                        reasoning = reasoning_contents.get(id(in_msg))
-                        if reasoning:
-                            out_msg["reasoning_content"] = reasoning
+                    for i, out_msg in enumerate(out_assistant):
+                        if aligned_reasoning[i]:
+                            out_msg["reasoning_content"] = aligned_reasoning[i]
 
             return _strip_top_level_message_name(messages)
 
         @staticmethod
         def convert_tool_result_to_string(
-            output: str | list[dict],
+            output: Union[str, List[dict]],
         ) -> tuple[str, Sequence[Tuple[str, dict]]]:
             """Extend parent class to support file blocks.
 
@@ -312,10 +718,25 @@ def create_model_and_formatter(
 
     # Try to get agent-specific model first
     model_slot = None
+    retry_config = None
+    rate_limit_config = None
     if agent_id:
         try:
             agent_config = load_agent_config(agent_id)
             model_slot = agent_config.active_model
+            retry_config = RetryConfig(
+                enabled=agent_config.running.llm_retry_enabled,
+                max_retries=agent_config.running.llm_max_retries,
+                backoff_base=agent_config.running.llm_backoff_base,
+                backoff_cap=agent_config.running.llm_backoff_cap,
+            )
+            rate_limit_config = RateLimitConfig(
+                max_concurrent=agent_config.running.llm_max_concurrent,
+                max_qpm=agent_config.running.llm_max_qpm,
+                pause_seconds=agent_config.running.llm_rate_limit_pause,
+                jitter_range=agent_config.running.llm_rate_limit_jitter,
+                acquire_timeout=agent_config.running.llm_acquire_timeout,
+            )
         except Exception:
             pass
 
@@ -328,30 +749,31 @@ def create_model_and_formatter(
             raise ValueError(
                 f"Provider '{model_slot.provider_id}' not found.",
             )
-        if provider.is_local:
-            from agentscope.model import create_local_chat_model
 
-            model = create_local_chat_model(
-                model_id=model_slot.model,
-                stream=True,
-                generate_kwargs={"max_tokens": None},
-            )
-        else:
-            model = provider.get_chat_model_instance(model_slot.model)
+        model = provider.get_chat_model_instance(model_slot.model)
         provider_id = model_slot.provider_id
     else:
         # Fallback to global active model
         model = ProviderManager.get_active_chat_model()
-        provider_id = (
-            ProviderManager.get_instance().get_active_model().provider_id
-        )
+        global_model = ProviderManager.get_instance().get_active_model()
+        if not global_model:
+            raise ValueError(
+                "No active model configured. "
+                "Please configure a model using 'copaw models config' "
+                "or set an agent-specific model.",
+            )
+        provider_id = global_model.provider_id
 
     # Create the formatter based on the real model class
     formatter = _create_formatter_instance(model.__class__)
 
     # Wrap with retry logic for transient LLM API errors
     wrapped_model = TokenRecordingModelWrapper(provider_id, model)
-    wrapped_model = RetryChatModel(wrapped_model)
+    wrapped_model = RetryChatModel(
+        wrapped_model,
+        retry_config=retry_config,
+        rate_limit_config=rate_limit_config,
+    )
 
     return wrapped_model, formatter
 
@@ -375,7 +797,10 @@ def _create_formatter_instance(
         base_formatter_class,
     )
     kwargs: dict[str, Any] = {}
-    if issubclass(base_formatter_class, OpenAIChatFormatter):
+    if issubclass(
+        base_formatter_class,
+        (OpenAIChatFormatter, GeminiChatFormatter),
+    ):
         kwargs["promote_tool_result_images"] = True
     return formatter_class(**kwargs)
 

@@ -25,6 +25,7 @@ from ..config.config import (
 )
 from ..constant import HEARTBEAT_DEFAULT_EVERY
 from ..providers import ProviderManager
+from ..constant import WORKING_DIR
 
 SECURITY_WARNING = """
 Security warning — please read.
@@ -141,7 +142,11 @@ def init_cmd(
 ) -> None:
     """Create working dir with config.json and HEARTBEAT.md (interactive)."""
     from pathlib import Path
-    from ..app.migration import ensure_default_agent_exists
+    from ..app.migration import (
+        ensure_default_agent_exists,
+        ensure_qa_agent_exists,
+        migrate_legacy_skills_to_skill_pool,
+    )
 
     config_path = get_config_path()
     working_dir = config_path.parent
@@ -171,10 +176,13 @@ def init_cmd(
     from ..utils.telemetry import (
         collect_and_upload_telemetry,
         has_telemetry_been_collected,
+        is_telemetry_opted_out,
         mark_telemetry_collected,
     )
 
-    if not has_telemetry_been_collected(working_dir):
+    if not is_telemetry_opted_out(
+        working_dir,
+    ) and not has_telemetry_been_collected(working_dir):
         if use_defaults:
             success = collect_and_upload_telemetry(working_dir)
 
@@ -185,15 +193,24 @@ def init_cmd(
                 if success:
                     click.echo("✓ Thank you!")
             else:
-                mark_telemetry_collected(working_dir)
+                mark_telemetry_collected(working_dir, opted_out=True)
 
     # --- Ensure default agent workspace exists ---
     click.echo("\n=== Default Workspace Initialization ===")
     ensure_default_agent_exists()
+    migrate_legacy_skills_to_skill_pool()
     click.echo("✓ Default workspace initialized")
+    ensure_qa_agent_exists()
+    click.echo("✓ Builtin QA agent workspace ensured")
+
+    # --- Ensure local skill hub exists ---
+    from ..agents.skills_manager import ensure_skill_pool_initialized
+
+    if ensure_skill_pool_initialized():
+        click.echo("✓ Skill pool initialized")
 
     # Get default workspace path for subsequent operations
-    default_workspace = Path("~/.copaw/workspaces/default").expanduser()
+    default_workspace = Path(f"{WORKING_DIR}/workspaces/default").expanduser()
 
     # --- config.json ---
     write_config = True
@@ -278,6 +295,32 @@ def init_cmd(
             )
             existing.agents.language = language
 
+        # --- audio mode selection ---
+        if not use_defaults:
+            audio_mode = prompt_choice(
+                "Select audio mode for voice messages:\n"
+                "  auto   - transcribe if provider available, else file placeholder\n"
+                "  native - send audio directly to model (needs ffmpeg)\n"
+                "Audio mode:",
+                options=["auto", "native"],
+                default=existing.agents.audio_mode,
+            )
+            existing.agents.audio_mode = audio_mode
+
+        # --- transcription provider type selection ---
+        if not use_defaults and audio_mode != "native":
+            provider_type = prompt_choice(
+                "Select transcription provider:\n"
+                "  disabled       - no transcription\n"
+                "  whisper_api    - remote Whisper API endpoint\n"
+                "  local_whisper  - locally installed openai-whisper\n"
+                "                   (requires ffmpeg + openai-whisper)\n"
+                "Provider:",
+                options=["disabled", "whisper_api", "local_whisper"],
+                default=existing.agents.transcription_provider_type,
+            )
+            existing.agents.transcription_provider_type = provider_type
+
         # --- channels (interactive when not --defaults) ---
         if not use_defaults and prompt_confirm(
             "Configure channels? "
@@ -317,21 +360,28 @@ def init_cmd(
 
     # --- skills (prompt if needed) ---
     if use_defaults:
-        # Using --defaults: enable all skills, skip existing
-        from ..agents.skills_manager import sync_skills_to_working_dir
-
-        click.echo("Enabling all skills by default (skip existing)...")
-        synced, skipped = sync_skills_to_working_dir(
-            workspace_dir=default_workspace,
-            skill_names=None,
-            force=False,
+        # Using --defaults: download all pool skills into workspace, then enable
+        from ..agents.skills_manager import (
+            SkillPoolService,
+            SkillService,
         )
-        if skipped:
-            click.echo(
-                f"✓ Skills synced: {synced}, skipped (existing): {skipped}",
+
+        pool = SkillPoolService()
+        service = SkillService(default_workspace)
+        click.echo("Downloading pool skills into workspace...")
+        for skill in pool.list_all_skills():
+            pool.download_to_workspace(
+                skill.name,
+                default_workspace,
+                overwrite=False,
             )
-        else:
-            click.echo(f"✓ All {synced} skills enabled.")
+        click.echo("Enabling all skills by default...")
+        synced = 0
+        for skill in service.list_all_skills():
+            result = service.enable_skill(skill.name)
+            if result.get("success"):
+                synced += 1
+        click.echo(f"✓ All {synced} skills enabled.")
     elif write_config:
         # Interactive mode and config was written: prompt user
         skills_choice = prompt_choice(
@@ -341,17 +391,33 @@ def init_cmd(
         )
 
         if skills_choice == "all":
-            from ..agents.skills_manager import sync_skills_to_working_dir
-
-            click.echo("Enabling all skills...")
-            synced, skipped = sync_skills_to_working_dir(
-                workspace_dir=default_workspace,
-                skill_names=None,
-                force=False,
+            from ..agents.skills_manager import (
+                SkillPoolService,
+                SkillService,
             )
-            click.echo(f"✓ Skills synced: {synced}, skipped: {skipped}")
+
+            pool = SkillPoolService()
+            service = SkillService(default_workspace)
+            click.echo("Downloading pool skills into workspace...")
+            for skill in pool.list_all_skills():
+                pool.download_to_workspace(
+                    skill.name,
+                    default_workspace,
+                    overwrite=False,
+                )
+            click.echo("Enabling all skills...")
+            synced = 0
+            for skill in service.list_all_skills():
+                result = service.enable_skill(skill.name)
+                if result.get("success"):
+                    synced += 1
+            click.echo(f"✓ Skills synced: {synced}")
         elif skills_choice == "custom":
-            configure_skills_interactive()
+            configure_skills_interactive(
+                agent_id="default",
+                working_dir=default_workspace,
+                include_pool_candidates=True,
+            )
         else:  # none
             click.echo("Skipped skills configuration.")
 

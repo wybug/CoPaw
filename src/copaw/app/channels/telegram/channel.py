@@ -352,6 +352,8 @@ class TelegramChannel(BaseChannel):
             return self._http_proxy
 
         builder = Application.builder().token(self._bot_token)
+        builder = builder.get_updates_read_timeout(20)
+        builder = builder.get_updates_connect_timeout(10)
         proxy = proxy_url()
         if proxy:
             builder = builder.proxy(proxy).get_updates_proxy(proxy)
@@ -790,19 +792,6 @@ class TelegramChannel(BaseChannel):
                     "Could not resolve media file from URL.",
                 )
             local_path = Path(raw_path).resolve()
-            allowed_root = (
-                (self._workspace_dir / "media").resolve()
-                if self._workspace_dir
-                else (WORKING_DIR / "media").resolve()
-            )
-            if not local_path.is_relative_to(allowed_root):
-                logger.error(
-                    "telegram: blocked media outside allowed directory: %s",
-                    local_path,
-                )
-                raise _MediaFileUnavailableError(
-                    f"Media file outside allowed directory: {local_path.name}",
-                )
             if not local_path.exists():
                 logger.warning(
                     "telegram: media file not found at path: %s",

@@ -15,7 +15,7 @@ from agentscope_runtime.engine.schemas.agent_schemas import (
 
 from ..base import ContentType
 
-from .constants import SENT_VIA_WEBHOOK
+from .constants import SENT_VIA_AI_CARD, SENT_VIA_WEBHOOK
 from .content_utils import (
     conversation_id_from_chatbot_message,
     conversation_type_from_chatbot_message,
@@ -47,6 +47,7 @@ class DingTalkChannelHandler(dingtalk_stream.ChatbotHandler):
         bot_prefix: str,
         download_url_fetcher,
         try_accept_message: Optional[Callable[[str], bool]] = None,
+        check_allowlist: Optional[Callable[[str, bool], tuple]] = None,
     ):
         super().__init__()
         self._main_loop = main_loop
@@ -54,6 +55,7 @@ class DingTalkChannelHandler(dingtalk_stream.ChatbotHandler):
         self._bot_prefix = bot_prefix
         self._download_url_fetcher = download_url_fetcher
         self._try_accept_message = try_accept_message
+        self._check_allowlist = check_allowlist
 
     def _emit_native_threadsafe(self, native: dict) -> None:
         if self._enqueue_callback:
@@ -252,6 +254,24 @@ class DingTalkChannelHandler(dingtalk_stream.ChatbotHandler):
                 incoming_message,
             )
             is_group = conversation_type == "group"
+
+            if self._check_allowlist:
+                allowed, error_msg = self._check_allowlist(
+                    sender,
+                    is_group,
+                )
+                if not allowed:
+                    logger.info(
+                        "dingtalk allowlist blocked: sender=%s is_group=%s",
+                        sender,
+                        is_group,
+                    )
+                    self.reply_text(
+                        self._bot_prefix + (error_msg or ""),
+                        incoming_message,
+                    )
+                    return dingtalk_stream.AckMessage.STATUS_OK, "ok"
+
             is_bot_mentioned = bool(raw_data.get("isInAtList"))
 
             loop = asyncio.get_running_loop()
@@ -262,6 +282,13 @@ class DingTalkChannelHandler(dingtalk_stream.ChatbotHandler):
                 "reply_loop": loop,
                 "conversation_type": conversation_type,
                 "is_group": is_group,
+                "sender_staff_id": getattr(
+                    incoming_message,
+                    "sender_staff_id",
+                    None,
+                )
+                or getattr(incoming_message, "senderStaffId", None)
+                or "",
             }
             if is_bot_mentioned:
                 meta["bot_mentioned"] = True
@@ -290,6 +317,8 @@ class DingTalkChannelHandler(dingtalk_stream.ChatbotHandler):
                     "session_webhook_expired_time",
                     None,
                 )
+                if sw_exp is not None:
+                    meta["session_webhook_expired_time"] = int(sw_exp)
                 logger.info(
                     "dingtalk recv: session_webhook present "
                     "session_from_url=%s "
@@ -337,7 +366,10 @@ class DingTalkChannelHandler(dingtalk_stream.ChatbotHandler):
             self._emit_native_threadsafe(native)
 
             response_text = await reply_future
-            if response_text == SENT_VIA_WEBHOOK:
+            if response_text == SENT_VIA_AI_CARD:
+                logger.info("sent to=%s via ai card", sender)
+                self.reply_text(" ", incoming_message)
+            elif response_text == SENT_VIA_WEBHOOK:
                 logger.info(
                     "sent to=%s via sessionWebhook (multi-message)",
                     sender,

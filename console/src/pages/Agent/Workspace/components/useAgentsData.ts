@@ -1,11 +1,17 @@
 import { useState, useEffect } from "react";
-import { message } from "@agentscope-ai/design";
+import { useAppMessage } from "../../../../hooks/useAppMessage";
 import { useTranslation } from "react-i18next";
 import api from "../../../../api";
 import type { MarkdownFile, DailyMemoryFile } from "../../../../api/types";
 import { workspaceApi } from "../../../../api/modules/workspace";
 import { agentsApi } from "../../../../api/modules/agents";
 import { useAgentStore } from "../../../../stores/agentStore";
+
+// Returns the parent directory of a file path, supporting both '/' and '\' separators.
+const getParentDir = (filePath: string): string => {
+  const match = filePath.match(/^(.*)[/\\]/);
+  return match ? match[1] : filePath;
+};
 
 export const useAgentsData = () => {
   const { t } = useTranslation();
@@ -17,8 +23,9 @@ export const useAgentsData = () => {
   const [fileContent, setFileContent] = useState("");
   const [originalContent, setOriginalContent] = useState("");
   const [loading, setLoading] = useState(false);
-  const [workspacePath, setWorkspacePath] = useState("");
+  const [workspacePath, setWorkspacePath] = useState<string | null>(null);
   const [enabledFiles, setEnabledFiles] = useState<string[]>([]);
+  const { message } = useAppMessage();
 
   useEffect(() => {
     const initializeData = async () => {
@@ -38,14 +45,11 @@ export const useAgentsData = () => {
       );
       setFiles(sortedFiles);
 
-      // Set workspace path
+      // Set workspace path (handle both Unix '/' and Windows '\' separators)
       if (fileList.length > 0) {
-        const path = fileList[0].path;
-        const workspace = path.substring(
-          0,
-          path.lastIndexOf("/") || path.lastIndexOf("\\"),
-        );
-        setWorkspacePath(workspace);
+        setWorkspacePath(getParentDir(fileList[0].path));
+      } else {
+        setWorkspacePath("");
       }
 
       // Try to re-select the same file in new workspace
@@ -131,13 +135,11 @@ export const useAgentsData = () => {
         enabled,
       );
       setFiles(sortedFiles);
+      // Set workspace path (handle both Unix '/' and Windows '\' separators)
       if (fileList.length > 0) {
-        const path = fileList[0].path;
-        const workspace = path.substring(
-          0,
-          path.lastIndexOf("/") || path.lastIndexOf("\\"),
-        );
-        setWorkspacePath(workspace);
+        setWorkspacePath(getParentDir(fileList[0].path));
+      } else {
+        setWorkspacePath("");
       }
     } catch (error) {
       console.error("Failed to fetch files", error);
