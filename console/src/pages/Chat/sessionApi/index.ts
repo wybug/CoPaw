@@ -51,7 +51,7 @@ interface ContentItem {
 /** A backend message after role-normalisation (output of toOutputMessage). */
 interface OutputMessage extends Omit<Message, "role"> {
   role: string;
-  metadata: null;
+  metadata: unknown;
   sequence_number?: number;
 }
 
@@ -76,6 +76,8 @@ interface ExtendedSession extends IAgentScopeRuntimeWebUISession {
   createdAt?: string | null;
   /** Whether the backend is still generating a response for this session. */
   generating?: boolean;
+  /** Whether the chat is pinned to the top. */
+  pinned?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -153,7 +155,7 @@ const toOutputMessage = (msg: Message): OutputMessage => ({
     msg.type === TYPE_PLUGIN_CALL_OUTPUT && msg.role === "system"
       ? ROLE_TOOL
       : msg.role,
-  metadata: null,
+  metadata: msg.metadata ?? null,
 });
 
 /** Build a user card (AgentScopeRuntimeRequestCard) from a user message. */
@@ -260,6 +262,7 @@ const chatSpecToSession = (chat: ChatSpec): ExtendedSession =>
     meta: chat.meta || {},
     status: chat.status ?? "idle",
     createdAt: chat.created_at ?? null,
+    pinned: chat.pinned ?? false,
   }) as ExtendedSession;
 
 /** Returns true when id is a pure numeric local timestamp (not a backend UUID). */
@@ -303,7 +306,7 @@ const resolveRealId = (
 // Per-session user message persistence (survives page refresh)
 // ---------------------------------------------------------------------------
 
-const STORAGE_PREFIX = "copaw_pending_user_msg_";
+const STORAGE_PREFIX = "qwenpaw_pending_user_msg_";
 
 function savePendingUserMessage(sessionId: string, text: string): void {
   try {

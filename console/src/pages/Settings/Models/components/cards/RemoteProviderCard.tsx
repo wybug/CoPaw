@@ -1,4 +1,4 @@
-import { useState } from "react";
+import React, { useState } from "react";
 import { Card, Button, Modal } from "@agentscope-ai/design";
 import type { ProviderInfo, ActiveModelsInfo } from "../../../../../api/types";
 import { ProviderConfigModal } from "../modals/ProviderConfigModal";
@@ -9,26 +9,16 @@ import { useAppMessage } from "../../../../../hooks/useAppMessage";
 import styles from "../../index.module.less";
 import { providerIcon } from "../providerIcon";
 
-// export const PROVIDER_IMG_MAP = {
-
-// }
-
 interface RemoteProviderCardProps {
   provider: ProviderInfo;
   activeModels: ActiveModelsInfo | null;
   onSaved: () => void;
-  isHover: boolean;
-  onMouseEnter: () => void;
-  onMouseLeave: () => void;
 }
 
-export function RemoteProviderCard({
+export const RemoteProviderCard = React.memo(function RemoteProviderCard({
   provider,
   activeModels,
   onSaved,
-  isHover,
-  onMouseEnter,
-  onMouseLeave,
 }: RemoteProviderCardProps) {
   const { t } = useTranslation();
   const { message } = useAppMessage();
@@ -63,7 +53,7 @@ export function RemoteProviderCard({
 
   let isConfigured = false;
 
-  if (provider.id === "copaw-local") {
+  if (provider.id === "qwenpaw-local") {
     isConfigured = true;
   } else if (provider.is_custom && provider.base_url) {
     isConfigured = true;
@@ -104,14 +94,7 @@ export function RemoteProviderCard({
     : "none";
 
   return (
-    <Card
-      hoverable
-      onMouseEnter={onMouseEnter}
-      onMouseLeave={onMouseLeave}
-      className={`${styles.providerCard} ${
-        isAvailable ? styles.enabledCard : ""
-      } ${isHover ? styles.hover : styles.normal}`}
-    >
+    <Card hoverable className={styles.providerCard}>
       {/* Card Header with Icon and Status */}
       <div className={styles.cardHeaderRow}>
         <img
@@ -177,44 +160,41 @@ export function RemoteProviderCard({
         </div>
       </div>
 
-      {/* Actions - only show on hover */}
-      {isHover && (
-        <div className={styles.cardActions}>
+      <div className={styles.cardActions}>
+        <Button
+          type="default"
+          size="small"
+          onClick={(e) => {
+            e.stopPropagation();
+            setModelManageOpen(true);
+          }}
+          className={styles.actionBtn}
+        >
+          {t("models.models")}
+        </Button>
+        <Button
+          type="default"
+          size="small"
+          onClick={(e) => {
+            e.stopPropagation();
+            setModalOpen(true);
+          }}
+          className={styles.actionBtn}
+        >
+          {t("models.settings")}
+        </Button>
+        {provider.is_custom && (
           <Button
             type="default"
             size="small"
-            onClick={(e) => {
-              e.stopPropagation();
-              setModelManageOpen(true);
-            }}
+            danger
+            onClick={handleDeleteProvider}
             className={styles.actionBtn}
           >
-            {t("models.models")}
+            {t("common.delete")}
           </Button>
-          <Button
-            type="default"
-            size="small"
-            onClick={(e) => {
-              e.stopPropagation();
-              setModalOpen(true);
-            }}
-            className={styles.actionBtn}
-          >
-            {t("models.settings")}
-          </Button>
-          {provider.is_custom && (
-            <Button
-              type="default"
-              size="small"
-              danger
-              onClick={handleDeleteProvider}
-              className={styles.actionBtn}
-            >
-              {t("common.delete")}
-            </Button>
-          )}
-        </div>
-      )}
+        )}
+      </div>
 
       <ProviderConfigModal
         provider={provider}
@@ -231,4 +211,4 @@ export function RemoteProviderCard({
       />
     </Card>
   );
-}
+});

@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, useMemo } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useProgressiveRender } from "../../../hooks/useProgressiveRender";
 import {
   Button,
   Checkbox,
@@ -6,7 +7,7 @@ import {
   Modal,
   Tooltip,
   Switch,
-  Input,
+  Select,
 } from "@agentscope-ai/design";
 import {
   CloseOutlined,
@@ -27,12 +28,14 @@ import {
   SkillDrawer,
   type SkillDrawerFormValues,
   useConflictRenameModal,
-  ImportHubModal,
   PoolTransferModal,
+  SkillFilterDropdown,
   getSkillVisual,
-  getSkillDisplaySource,
 } from "./components";
+import { ImportHubModal } from "./components/ImportHubModal";
+import { isSkillBuiltin } from "@/utils/skill";
 import { useSkills } from "./useSkills";
+import { useSkillFilter } from "./useSkillFilter";
 import { useTranslation } from "react-i18next";
 import { useAgentStore } from "../../../stores/agentStore";
 import { useAppMessage } from "../../../hooks/useAppMessage";
@@ -45,6 +48,24 @@ import dayjs from "dayjs";
 import relativeTime from "dayjs/plugin/relativeTime";
 
 dayjs.extend(relativeTime);
+
+type DownloadConflict =
+  | {
+      skill_name: string;
+      reason: "conflict";
+    }
+  | {
+      skill_name: string;
+      reason: "builtin_upgrade";
+      current_version_text: string;
+      source_version_text: string;
+    }
+  | {
+      skill_name: string;
+      reason: "language_switch";
+      source_language: string;
+      current_language: string;
+    };
 
 function SkillsPage() {
   const { t } = useTranslation();
@@ -67,7 +88,6 @@ function SkillsPage() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [importModalOpen, setImportModalOpen] = useState(false);
   const [editingSkill, setEditingSkill] = useState<SkillSpec | null>(null);
-  const [hoverKey, setHoverKey] = useState<string | null>(null);
   const [form] = Form.useForm<SkillDrawerFormValues>();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [poolSkills, setPoolSkills] = useState<PoolSkillSpec[]>([]);
@@ -78,19 +98,44 @@ function SkillsPage() {
     useConflictRenameModal();
   const [selectedSkills, setSelectedSkills] = useState<Set<string>>(new Set());
   const [batchModeEnabled, setBatchModeEnabled] = useState(false);
-  const batchMode = batchModeEnabled;
   const [viewMode, setViewMode] = useState<"card" | "list">("card");
-  const [searchQuery, setSearchQuery] = useState("");
+  const [filterOpen, setFilterOpen] = useState(false);
+  const {
+    searchQuery,
+    setSearchQuery,
+    searchTags,
+    setSearchTags,
+    allTags,
+    filteredSkills,
+  } = useSkillFilter(skills);
 
-  const filteredSkills = useMemo(() => {
-    const query = searchQuery.toLowerCase();
-    return skills.filter((skill) => {
-      return (
-        skill.name.toLowerCase().includes(query) ||
-        (skill.description && skill.description.toLowerCase().includes(query))
-      );
+  const sortedSkills = useMemo(
+    () =>
+      filteredSkills.slice().sort((a, b) => {
+        if (a.enabled && !b.enabled) return -1;
+        if (!a.enabled && b.enabled) return 1;
+        return a.name.localeCompare(b.name);
+      }),
+    [filteredSkills],
+  );
+
+  const {
+    visibleItems: visibleSkills,
+    hasMore,
+    sentinelRef,
+  } = useProgressiveRender(sortedSkills);
+
+  const confirmOverwrite = (title: string, content: ReactNode) =>
+    new Promise<boolean>((resolve) => {
+      Modal.confirm({
+        title,
+        content,
+        okText: t("common.confirm"),
+        cancelText: t("common.cancel"),
+        onOk: () => resolve(true),
+        onCancel: () => resolve(false),
+      });
     });
-  }, [skills, searchQuery]);
 
   const toggleSelect = (name: string) => {
     setSelectedSkills((prev) => {
@@ -103,10 +148,10 @@ function SkillsPage() {
 
   const clearSelection = () => {
     setSelectedSkills(new Set());
-    // setBatchModeEnabled(false);
   };
 
-  const selectAll = () => setSelectedSkills(new Set(skills.map((s) => s.name)));
+  const selectAll = () =>
+    setSelectedSkills(new Set(filteredSkills.map((s) => s.name)));
 
   const MAX_UPLOAD_SIZE_MB = 100;
 
@@ -187,6 +232,7 @@ function SkillsPage() {
     form.setFieldsValue({
       enabled: false,
       channels: ["all"],
+      tags: [],
     });
     setDrawerOpen(true);
   };
@@ -257,42 +303,67 @@ function SkillsPage() {
     if (editingSkill) {
       const sourceName = editingSkill.name;
       const targetName = values.name;
-      try {
+      const saveEditedSkill = async (overwrite = false) => {
         const result = await api.saveSkill({
           name: targetName,
           content: values.content,
           source_name: sourceName !== targetName ? sourceName : undefined,
           config: values.config,
+          overwrite,
         });
-        await api.updateSkillChannels(result.name, values.channels || ["all"]);
-        if (result.mode === "noop") {
+        const sideUpdates: Promise<unknown>[] = [];
+        const newChannels = values.channels || ["all"];
+        if (
+          JSON.stringify(newChannels) !==
+          JSON.stringify(editingSkill.channels || ["all"])
+        ) {
+          sideUpdates.push(api.updateSkillChannels(result.name, newChannels));
+        }
+        const newTags = values.tags || [];
+        if (
+          JSON.stringify(newTags) !== JSON.stringify(editingSkill.tags || [])
+        ) {
+          sideUpdates.push(api.updateSkillTags(result.name, newTags));
+        }
+        await Promise.all(sideUpdates);
+        if (result.mode === "noop" && sideUpdates.length === 0) {
           setDrawerOpen(false);
-          await refreshSkills();
           return;
         }
-        message.success(
-          result.mode === "rename"
-            ? `${t("common.save")}: ${result.name}`
-            : t("common.save"),
-        );
+        if (result.mode !== "noop") {
+          message.success(
+            result.mode === "rename"
+              ? `${t("common.save")}: ${result.name}`
+              : t("common.save"),
+          );
+        }
         setDrawerOpen(false);
-        invalidateSkillCache({ agentId: selectedAgent }); // Clear cache after mutation
+        invalidateSkillCache({ agentId: selectedAgent });
         await refreshSkills();
+      };
+      try {
+        await saveEditedSkill();
       } catch (error) {
         const detail = parseErrorDetail(error);
-        if (detail?.suggested_name) {
-          const renameMap = await showConflictRenameModal([
-            {
-              key: targetName,
-              label: targetName,
-              suggested_name: detail.suggested_name,
-            },
-          ]);
-          if (renameMap) {
-            const newName = Object.values(renameMap)[0];
-            if (newName) {
-              await handleSubmit({ ...values, name: newName });
-            }
+        if (detail?.reason === "conflict") {
+          const confirmed = await confirmOverwrite(
+            t("skillPool.overwriteConfirm"),
+            <div style={{ display: "grid", gap: 8 }}>
+              <div>{t("skills.overwriteExistingList")}</div>
+              <ul style={{ margin: 0, paddingLeft: 20 }}>
+                <li>{targetName}</li>
+              </ul>
+            </div>,
+          );
+          if (!confirmed) return;
+          try {
+            await saveEditedSkill(true);
+          } catch (retryError) {
+            message.error(
+              retryError instanceof Error
+                ? retryError.message
+                : t("common.save"),
+            );
           }
         } else {
           message.error(
@@ -309,7 +380,13 @@ function SkillsPage() {
         true,
       );
       if (result.success) {
-        await api.updateSkillChannels(submitName, values.channels || ["all"]);
+        const actualName = result.name || submitName;
+        await Promise.all([
+          api.updateSkillChannels(actualName, values.channels || ["all"]),
+          ...(values.tags?.length
+            ? [api.updateSkillTags(actualName, values.tags)]
+            : []),
+        ]);
         setDrawerOpen(false);
         invalidateSkillCache({ agentId: selectedAgent }); // Clear cache after updating channels
         await refreshSkills();
@@ -336,30 +413,43 @@ function SkillsPage() {
   const handleUploadToPool = async (workspaceSkillNames: string[]) => {
     if (workspaceSkillNames.length === 0) return;
     try {
+      const conflictingNames: string[] = [];
       for (const skillName of workspaceSkillNames) {
-        let newName: string | undefined;
-        while (true) {
-          try {
-            await api.uploadWorkspaceSkillToPool({
-              workspace_id: selectedAgent,
-              skill_name: skillName,
-              new_name: newName,
-            });
-            break;
-          } catch (error) {
-            const detail = parseErrorDetail(error);
-            if (!detail?.suggested_name) throw error;
-            const renameMap = await showConflictRenameModal([
-              {
-                key: skillName,
-                label: skillName,
-                suggested_name: detail.suggested_name,
-              },
-            ]);
-            if (!renameMap) return;
-            newName = Object.values(renameMap)[0] || undefined;
+        try {
+          await api.uploadWorkspaceSkillToPool({
+            workspace_id: selectedAgent,
+            skill_name: skillName,
+            preview_only: true,
+          });
+        } catch (error) {
+          const detail = parseErrorDetail(error);
+          if (detail?.reason === "conflict") {
+            conflictingNames.push(skillName);
+            continue;
           }
+          throw error;
         }
+      }
+      if (conflictingNames.length > 0) {
+        const confirmed = await confirmOverwrite(
+          t("skillPool.overwriteConfirm"),
+          <div style={{ display: "grid", gap: 8 }}>
+            <div>{t("skills.overwriteExistingList")}</div>
+            <ul style={{ margin: 0, paddingLeft: 20 }}>
+              {conflictingNames.map((name) => (
+                <li key={name}>{name}</li>
+              ))}
+            </ul>
+          </div>,
+        );
+        if (!confirmed) return;
+      }
+      for (const skillName of workspaceSkillNames) {
+        await api.uploadWorkspaceSkillToPool({
+          workspace_id: selectedAgent,
+          skill_name: skillName,
+          overwrite: conflictingNames.includes(skillName),
+        });
       }
       message.success(t("skills.uploadedToPool"));
       closePoolModal();
@@ -373,58 +463,112 @@ function SkillsPage() {
     }
   };
 
-  const handleDownloadFromPool = async (
-    poolSkillNames: string[],
-    overwrite?: boolean,
-  ) => {
+  const handleDownloadFromPool = async (poolSkillNames: string[]) => {
     if (poolSkillNames.length === 0) return;
     try {
+      const conflicts: DownloadConflict[] = [];
       for (const skillName of poolSkillNames) {
-        let targetName: string | undefined;
-        let shouldOverwrite = overwrite;
-        while (true) {
-          try {
-            await api.downloadSkillPoolSkill({
-              skill_name: skillName,
-              targets: [
-                {
-                  workspace_id: selectedAgent,
-                  target_name: targetName,
-                },
-              ],
-              overwrite: shouldOverwrite,
-            });
-            break;
-          } catch (error) {
-            const detail = parseErrorDetail(error);
-            const conflict = detail?.conflicts?.[0];
-            if (conflict?.reason === "builtin_upgrade") {
-              const confirmed = await new Promise<boolean>((resolve) => {
-                Modal.confirm({
-                  title: t("skills.builtinUpgradeTitle"),
-                  content: t("skills.builtinUpgradeContent", {
-                    name: conflict.skill_name || skillName,
-                  }),
-                  onOk: () => resolve(true),
-                  onCancel: () => resolve(false),
-                });
-              });
-              if (!confirmed) return;
-              shouldOverwrite = true;
-              continue;
-            }
-            if (!conflict?.suggested_name) throw error;
-            const renameMap = await showConflictRenameModal([
-              {
-                key: skillName,
-                label: skillName,
-                suggested_name: conflict.suggested_name,
-              },
-            ]);
-            if (!renameMap) return;
-            targetName = Object.values(renameMap)[0] || undefined;
+        try {
+          await api.downloadSkillPoolSkill({
+            skill_name: skillName,
+            targets: [{ workspace_id: selectedAgent }],
+            preview_only: true,
+          });
+        } catch (error) {
+          const detail = parseErrorDetail(error);
+          const returnedConflicts = Array.isArray(detail?.conflicts)
+            ? detail.conflicts
+            : [];
+          if (!returnedConflicts.length) {
+            throw error;
           }
+          conflicts.push(
+            ...returnedConflicts.map((conflict): DownloadConflict => {
+              if (conflict?.reason === "builtin_upgrade") {
+                return {
+                  skill_name: conflict.skill_name || skillName,
+                  reason: "builtin_upgrade" as const,
+                  current_version_text: conflict.current_version_text || "",
+                  source_version_text: conflict.source_version_text || "",
+                };
+              }
+              if (conflict?.reason === "language_switch") {
+                return {
+                  skill_name: conflict.skill_name || skillName,
+                  reason: "language_switch" as const,
+                  source_language: conflict.source_language || "",
+                  current_language: conflict.current_language || "",
+                };
+              }
+              return {
+                skill_name: conflict?.skill_name || skillName,
+                reason: "conflict" as const,
+              };
+            }),
+          );
         }
+      }
+      if (conflicts.length > 0) {
+        const allBuiltinUpgrades = conflicts.every(
+          (conflict) => conflict.reason === "builtin_upgrade",
+        );
+        const allLanguageSwitch = conflicts.every(
+          (conflict) => conflict.reason === "language_switch",
+        );
+        const title = allBuiltinUpgrades
+          ? t("skills.builtinUpgradeTitle")
+          : allLanguageSwitch
+          ? t("skills.languageSwitchTitle")
+          : t("skillPool.overwriteConfirm");
+        const subtitle = allBuiltinUpgrades
+          ? t("skillPool.builtinOverwriteTargetsContent")
+          : allLanguageSwitch
+          ? t("skills.languageSwitchContent")
+          : t("skills.overwriteExistingList");
+        const confirmed = await confirmOverwrite(
+          title,
+          <div style={{ display: "grid", gap: 8 }}>
+            <div>{subtitle}</div>
+            {conflicts.map((conflict) => (
+              <div key={conflict.skill_name}>
+                <strong>{conflict.skill_name}</strong>
+                {conflict.reason === "builtin_upgrade" ? (
+                  <>
+                    {"  "}
+                    {t("skillPool.currentVersion")}:{" "}
+                    {conflict.current_version_text || "-"}
+                    {"  ->  "}
+                    {t("skillPool.sourceVersion")}:{" "}
+                    {conflict.source_version_text || "-"}
+                  </>
+                ) : null}
+                {conflict.reason === "language_switch" ? (
+                  <>
+                    {"  "}
+                    {conflict.current_language === "zh"
+                      ? t("skillPool.langZh")
+                      : t("skillPool.langEn")}
+                    {"  →  "}
+                    {conflict.source_language === "zh"
+                      ? t("skillPool.langZh")
+                      : t("skillPool.langEn")}
+                  </>
+                ) : null}
+              </div>
+            ))}
+          </div>,
+        );
+        if (!confirmed) return;
+      }
+      for (const skillName of poolSkillNames) {
+        const shouldOverwrite = conflicts.some(
+          (conflict) => conflict.skill_name === skillName,
+        );
+        await api.downloadSkillPoolSkill({
+          skill_name: skillName,
+          targets: [{ workspace_id: selectedAgent }],
+          overwrite: shouldOverwrite,
+        });
       }
       message.success(t("skills.downloadedToWorkspace"));
       closePoolModal();
@@ -498,7 +642,7 @@ function SkillsPage() {
               onChange={handleFileChange}
               style={{ display: "none" }}
             />
-            {batchMode ? (
+            {batchModeEnabled ? (
               <div className={styles.batchActions}>
                 <>
                   <span className={styles.batchCount}>
@@ -629,14 +773,31 @@ function SkillsPage() {
 
       {!loading && skills.length > 0 && (
         <div className={styles.toolbar}>
-          <Input
-            className={styles.searchInput}
-            placeholder={t("skills.searchPlaceholder")}
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            allowClear
-            prefix={<SearchOutlined />}
-          />
+          <div className={styles.searchContainer}>
+            <Select
+              mode="multiple"
+              className={styles.searchSelect}
+              placeholder={t("skills.searchPlaceholder")}
+              value={searchTags}
+              onChange={setSearchTags}
+              searchValue={searchQuery}
+              onSearch={setSearchQuery}
+              open={filterOpen && allTags.length > 0}
+              onDropdownVisibleChange={setFilterOpen}
+              allowClear
+              maxTagCount="responsive"
+              suffixIcon={<SearchOutlined />}
+              notFoundContent={<></>}
+              dropdownRender={() => (
+                <SkillFilterDropdown
+                  allTags={allTags}
+                  searchTags={searchTags}
+                  setSearchTags={setSearchTags}
+                  styles={styles}
+                />
+              )}
+            />
+          </div>
           <div className={styles.toolbarRight}>
             <div className={styles.viewToggle}>
               <button
@@ -688,113 +849,112 @@ function SkillsPage() {
         </div>
       ) : viewMode === "card" ? (
         <div className={styles.skillsGrid}>
-          {filteredSkills
-            .slice()
-            .sort((a, b) => {
-              if (a.enabled && !b.enabled) return -1;
-              if (!a.enabled && b.enabled) return 1;
-              return a.name.localeCompare(b.name);
-            })
-            .map((skill) => (
-              <SkillCard
-                key={skill.name}
-                skill={skill}
-                isHover={hoverKey === skill.name}
-                selected={
-                  batchMode ? selectedSkills.has(skill.name) : undefined
-                }
-                onSelect={() => toggleSelect(skill.name)}
-                onClick={() => handleEdit(skill)}
-                onMouseEnter={() => setHoverKey(skill.name)}
-                onMouseLeave={() => setHoverKey(null)}
-                onToggleEnabled={(e) => handleToggleEnabled(skill, e)}
-                onDelete={(e) => handleDelete(skill, e)}
-              />
-            ))}
+          {visibleSkills.map((skill) => (
+            <SkillCard
+              key={skill.name}
+              skill={skill}
+              selected={
+                batchModeEnabled ? selectedSkills.has(skill.name) : undefined
+              }
+              onSelect={() => toggleSelect(skill.name)}
+              onClick={() => handleEdit(skill)}
+              onMouseEnter={() => {}}
+              onMouseLeave={() => {}}
+              onToggleEnabled={(e) => handleToggleEnabled(skill, e)}
+              onDelete={(e) => handleDelete(skill, e)}
+            />
+          ))}
+          {hasMore && <div ref={sentinelRef} style={{ height: 1 }} />}
         </div>
       ) : (
         <div className={styles.skillsList}>
-          {filteredSkills
-            .slice()
-            .sort((a, b) => {
-              if (a.enabled && !b.enabled) return -1;
-              if (!a.enabled && b.enabled) return 1;
-              return a.name.localeCompare(b.name);
-            })
-            .map((skill) => {
-              const isBuiltin =
-                getSkillDisplaySource(skill.source) === "builtin";
-              const channels = skill.channels?.join(", ") || "all";
-              const isSelected = selectedSkills.has(skill.name);
-              return (
-                <div
-                  key={skill.name}
-                  className={`${styles.skillListItem} ${
-                    isSelected ? styles.selectedListItem : ""
-                  }`}
-                  onClick={() => {
-                    if (batchMode) {
+          {visibleSkills.map((skill) => {
+            const isBuiltin = isSkillBuiltin(skill.source);
+            const channels = (skill.channels || ["all"])
+              .map((ch) => (ch === "all" ? t("skills.allChannels") : ch))
+              .join(", ");
+            const isSelected = selectedSkills.has(skill.name);
+            return (
+              <div
+                key={skill.name}
+                className={`${styles.skillListItem} ${
+                  isSelected ? styles.selectedListItem : ""
+                }`}
+                onClick={() => {
+                  if (batchModeEnabled) {
+                    toggleSelect(skill.name);
+                  } else {
+                    handleEdit(skill);
+                  }
+                }}
+              >
+                {batchModeEnabled && (
+                  <Checkbox
+                    checked={isSelected}
+                    onClick={(e) => {
+                      e.stopPropagation();
                       toggleSelect(skill.name);
-                    } else {
-                      handleEdit(skill);
-                    }
-                  }}
-                >
-                  {batchMode && (
-                    <Checkbox
-                      checked={isSelected}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        toggleSelect(skill.name);
-                      }}
-                    />
-                  )}
-                  <div className={styles.listItemLeft}>
-                    <span className={styles.fileIcon}>
-                      {getSkillVisual(skill.name, skill.content)}
-                    </span>
-                    <div className={styles.listItemInfo}>
-                      <div className={styles.listItemHeader}>
-                        <span className={styles.skillTitle}>{skill.name}</span>
-                        <span className={styles.typeBadge}>
-                          {isBuiltin ? t("skills.builtin") : t("skills.custom")}
+                    }}
+                  />
+                )}
+                <div className={styles.listItemLeft}>
+                  <span className={styles.fileIcon}>
+                    {getSkillVisual(skill.name, skill.emoji)}
+                  </span>
+                  <div className={styles.listItemInfo}>
+                    <div className={styles.listItemHeader}>
+                      <span className={styles.skillTitle}>{skill.name}</span>
+                      <span className={styles.typeBadge}>
+                        {isBuiltin ? t("skills.builtin") : t("skills.custom")}
+                      </span>
+                      <span className={styles.channelBadge}>{channels}</span>
+                      {skill.last_updated && (
+                        <span className={styles.listItemTime}>
+                          {t("skills.lastUpdated")}{" "}
+                          {dayjs(skill.last_updated).fromNow()}
                         </span>
-                        <span className={styles.channelBadge}>{channels}</span>
-                        {skill.last_updated && (
-                          <span className={styles.listItemTime}>
-                            {t("skills.lastUpdated")}{" "}
-                            {dayjs(skill.last_updated).fromNow()}
-                          </span>
-                        )}
-                      </div>
-                      <p className={styles.listItemDesc}>
-                        {skill.description || "-"}
-                      </p>
+                      )}
                     </div>
+                    <p className={styles.listItemDesc}>
+                      {skill.description || "-"}
+                    </p>
+                    {!!skill.tags?.length && (
+                      <div className={styles.listItemTags}>
+                        {skill.tags.map((tag) => (
+                          <span key={tag} className={styles.tagChip}>
+                            {tag}
+                          </span>
+                        ))}
+                      </div>
+                    )}
                   </div>
-                  <div className={styles.listItemRight}>
+                </div>
+                <div className={styles.listItemRight}>
+                  <span onClick={(e) => e.stopPropagation()}>
                     <Switch
                       checked={skill.enabled}
-                      disabled={batchMode}
+                      disabled={batchModeEnabled}
                       onChange={async () => {
                         await toggleEnabled(skill);
                         await refreshSkills();
                       }}
                     />
-                    <Button
-                      danger
-                      disabled={batchMode}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleDelete(skill);
-                      }}
-                    >
-                      {t("common.delete")}
-                    </Button>
-                  </div>
+                  </span>
+                  <Button
+                    danger
+                    disabled={batchModeEnabled}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleDelete(skill);
+                    }}
+                  >
+                    {t("common.delete")}
+                  </Button>
                 </div>
-              );
-            })}
+              </div>
+            );
+          })}
+          {hasMore && <div ref={sentinelRef} style={{ height: 1 }} />}
         </div>
       )}
 
@@ -813,6 +973,7 @@ function SkillsPage() {
         open={drawerOpen}
         editingSkill={editingSkill}
         form={form}
+        availableTags={allTags}
         onClose={handleDrawerClose}
         onSubmit={handleSubmit}
       />

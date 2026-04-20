@@ -28,6 +28,7 @@ export interface DingTalkConfig extends BaseChannelConfig {
   card_template_id: string;
   card_template_key: string;
   robot_code: string;
+  at_sender_on_reply?: boolean;
 }
 
 export interface FeishuConfig extends BaseChannelConfig {
@@ -42,6 +43,7 @@ export interface FeishuConfig extends BaseChannelConfig {
 export interface QQConfig extends BaseChannelConfig {
   app_id: string;
   client_secret: string;
+  ack_message?: string;
 }
 
 export interface TelegramConfig extends BaseChannelConfig {
@@ -111,6 +113,13 @@ export interface XiaoYiConfig extends BaseChannelConfig {
   task_timeout_ms?: number;
 }
 
+export interface OneBotConfig extends BaseChannelConfig {
+  ws_host: string;
+  ws_port: number;
+  access_token: string;
+  share_session_in_group: boolean;
+}
+
 export interface ChannelConfig {
   imessage: IMessageChannelConfig;
   discord: DiscordConfig;
@@ -125,6 +134,7 @@ export interface ChannelConfig {
   console: ConsoleConfig;
   voice: VoiceChannelConfig;
   xiaoyi: XiaoYiConfig;
+  onebot: OneBotConfig;
 }
 
 export type SingleChannelConfig =
@@ -140,4 +150,5 @@ export type SingleChannelConfig =
   | MattermostConfig
   | WecomConfig
   | VoiceChannelConfig
-  | XiaoYiConfig;
+  | XiaoYiConfig
+  | OneBotConfig;
